@@ -86,7 +86,15 @@ app.use((err, req, res, next) => {
  * START SERVER (Railway compatible)
  * =========================
  */
-const PORT = process.env.PORT;
+app.get("/", (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "🚀 Biashnet M-Pesa API is LIVE",
+    environment: process.env.NODE_ENV || "development",
+  });
+});
+
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Biashnet API running on port ${PORT}`);
