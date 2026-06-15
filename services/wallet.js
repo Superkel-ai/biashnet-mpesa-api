@@ -10,9 +10,8 @@ async function creditWallet({ phone, amount, receiptNumber }) {
   if (!phone || !amount || !receiptNumber) {
     throw new Error("Missing wallet credit parameters");
   }
-
-  const walletRef = db.collection("wallets").doc(phone);
-  const txRef = db.collection("transactions").doc(receiptNumber);
+    const walletRef = db.collection("wallets").doc(String(phone));j
+    const txRef = db.collection("transactions").doc(receiptNumber);
 
   try {
     // RUN AN ATOMIC TRANSACTION (All reads must happen before any writes)

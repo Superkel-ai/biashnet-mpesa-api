@@ -63,10 +63,18 @@ app.post("/callback", async (req, res) => {
     const items = callback.CallbackMetadata?.Item || [];
 
     items.forEach((item) => {
-      if (item.Name === "Amount") amount = item.Value;
-      if (item.Name === "PhoneNumber") phone = item.Value;
-      if (item.Name === "MpesaReceiptNumber") receiptNumber = item.Value;
-    });
+  if (item.Name === "Amount") {
+    amount = Number(item.Value);
+  }
+
+  if (item.Name === "PhoneNumber") {
+    phone = String(item.Value);
+  }
+
+  if (item.Name === "MpesaReceiptNumber") {
+    receiptNumber = String(item.Value);
+  }
+});
 
     const checkoutRequestID = callback.CheckoutRequestID;
 
@@ -78,6 +86,9 @@ app.post("/callback", async (req, res) => {
       receiptNumber, // Matched parameter name
       status: "SUCCESS",
     });
+
+    console.log("📱 Phone:", phone);
+console.log("📱 Type:", typeof phone);
 
     // 2. Credit wallet (Fixed: Passing as an object matching your service schema)
     await creditWallet({ 
