@@ -6,96 +6,216 @@ const stkRoutes = require("./routes/stk");
 
 const app = express();
 
-/**
- * =========================
- * MIDDLEWARE
- * =========================
- */
-app.use(cors());
-app.use(express.json());
+/* =====================================================
+   CONFIG
+===================================================== */
 
-/**
- * =========================
- * HEALTH CHECK (Railway uses this)
- * =========================
- */
+app.set("trust proxy", true);
+
+/* =====================================================
+   MIDDLEWARE
+===================================================== */
+
+app.use(cors());
+
+app.use(
+  express.json({
+    limit: "10mb",
+  })
+);
+
+app.use(
+  express.urlencoded({
+    extended: true,
+  })
+);
+
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
+
 app.get("/", (req, res) => {
   res.status(200).json({
     success: true,
-    message: "🚀 Biashnet M-Pesa API is LIVE",
-    environment: process.env.NODE_ENV || "development",
+    app: "Biashnet M-Pesa API",
+    status: "LIVE",
+    environment:
+      process.env.NODE_ENV || "development",
+    timestamp: new Date().toISOString(),
   });
 });
 
-/**
- * =========================
- * API ROUTES
- * =========================
- */
+/* =====================================================
+   API ROUTES
+===================================================== */
+
 app.use("/api", stkRoutes);
 
-/**
- * =========================
- * CALLBACK (Safaricom hits here)
- * =========================
- */
-app.post("/callback", (req, res) => {
+/* =====================================================
+   MPESA CALLBACK
+===================================================== */
+
+app.post("/callback", async (req, res) => {
   try {
-    console.log("📩 M-Pesa Callback Received:");
+    console.log(
+      "=============================="
+    );
+    console.log(
+      "📩 MPESA CALLBACK RECEIVED"
+    );
+    console.log(
+      JSON.stringify(
+        req.body,
+        null,
+        2
+      )
+    );
+    console.log(
+      "=============================="
+    );
 
-    const body = req.body;
+    // TODO:
+    // Save transaction
+    // Update Firestore
+    // Credit wallet
+    // Update order
 
-    console.log(JSON.stringify(body, null, 2));
-
-    // FUTURE LOGIC (we will add later):
-    // 1. verify payment success
-    // 2. update order in Firestore
-    // 3. credit seller wallet
-    // 4. calculate commission
-
-    res.status(200).json({
+    return res.status(200).json({
       ResultCode: 0,
       ResultDesc: "Accepted",
     });
-  } catch (error) {
-    console.error("Callback Error:", error.message);
 
-    res.status(500).json({
+  } catch (error) {
+
+    console.error(
+      "🔥 Callback Error:",
+      error
+    );
+
+    return res.status(500).json({
       ResultCode: 1,
       ResultDesc: "Failed",
     });
+
   }
 });
 
-/**
- * =========================
- * GLOBAL ERROR HANDLER
- * =========================
- */
-app.use((err, req, res, next) => {
-  console.error("🔥 Server Error:", err);
+/* =====================================================
+   404 HANDLER
+===================================================== */
 
-  res.status(500).json({
+app.use("*", (req, res) => {
+  res.status(404).json({
     success: false,
-    message: "Internal Server Error",
+    message: "Route not found",
   });
 });
 
-/**
- * =========================
- * START SERVER (Railway compatible)
- * =========================
- */
-app.get("/", (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: "🚀 Biashnet M-Pesa API is LIVE",
-    environment: process.env.NODE_ENV || "development",
-  });
-});
+/* =====================================================
+   ERROR HANDLER
+===================================================== */
 
-const PORT = process.env.PORT || 3000;
+app.use(
+  (err, req, res, next) => {
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Biashnet API running on port ${PORT}`);
-});
+    console.error(
+      "🔥 Server Error:",
+      err
+    );
+
+    res.status(500).json({
+      success: false,
+      message:
+        err.message ||
+        "Internal Server Error",
+    });
+
+  }
+);
+
+/* =====================================================
+   START SERVER
+===================================================== */
+
+const PORT =
+  process.env.PORT || 3000;
+
+const server = app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+
+    console.log(
+      "================================"
+    );
+
+    console.log(
+      `🚀 Biashnet API Running`
+    );
+
+    console.log(
+      `🌍 Port: ${PORT}`
+    );
+
+    console.log(
+      `📦 Environment: ${
+        process.env.NODE_ENV ||
+        "development"
+      }`
+    );
+
+    console.log(
+      "================================"
+    );
+
+  }
+);
+
+/* =====================================================
+   GRACEFUL SHUTDOWN
+===================================================== */
+
+process.on(
+  "SIGTERM",
+  () => {
+
+    console.log(
+      "⚠️ SIGTERM received"
+    );
+
+    server.close(() => {
+
+      console.log(
+        "🛑 Server closed"
+      );
+
+      process.exit(0);
+
+    });
+
+  }
+);
+
+process.on(
+  "unhandledRejection",
+  (reason) => {
+
+    console.error(
+      "🔥 Unhandled Rejection:",
+      reason
+    );
+
+  }
+);
+
+process.on(
+  "uncaughtException",
+  (error) => {
+
+    console.error(
+      "🔥 Uncaught Exception:",
+      error
+    );
+
+  }
+);
