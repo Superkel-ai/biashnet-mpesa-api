@@ -6,33 +6,21 @@ const stkRoutes = require("./routes/stk");
 
 const app = express();
 
-/* =====================================================
-   CONFIG
-===================================================== */
-
-app.set("trust proxy", true);
-
-/* =====================================================
+/* =========================================
    MIDDLEWARE
-===================================================== */
+========================================= */
 
 app.use(cors());
 
-app.use(
-  express.json({
-    limit: "10mb",
-  })
-);
+app.use(express.json());
 
-app.use(
-  express.urlencoded({
-    extended: true,
-  })
-);
+app.use(express.urlencoded({
+  extended: true,
+}));
 
-/* =====================================================
+/* =========================================
    HEALTH CHECK
-===================================================== */
+========================================= */
 
 app.get("/", (req, res) => {
   res.status(200).json({
@@ -45,177 +33,63 @@ app.get("/", (req, res) => {
   });
 });
 
-/* =====================================================
+/* =========================================
    API ROUTES
-===================================================== */
+========================================= */
 
 app.use("/api", stkRoutes);
 
-/* =====================================================
+/* =========================================
    MPESA CALLBACK
-===================================================== */
+========================================= */
 
-app.post("/callback", async (req, res) => {
-  try {
-    console.log(
-      "=============================="
-    );
-    console.log(
-      "📩 MPESA CALLBACK RECEIVED"
-    );
-    console.log(
-      JSON.stringify(
-        req.body,
-        null,
-        2
-      )
-    );
-    console.log(
-      "=============================="
-    );
+app.post("/callback", (req, res) => {
 
-    // TODO:
-    // Save transaction
-    // Update Firestore
-    // Credit wallet
-    // Update order
+  console.log("📩 MPESA CALLBACK");
 
-    return res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: "Accepted",
-    });
+  console.log(
+    JSON.stringify(
+      req.body,
+      null,
+      2
+    )
+  );
 
-  } catch (error) {
-
-    console.error(
-      "🔥 Callback Error:",
-      error
-    );
-
-    return res.status(500).json({
-      ResultCode: 1,
-      ResultDesc: "Failed",
-    });
-
-  }
-});
-
-/* =====================================================
-   404 HANDLER
-===================================================== */
-
-app.use("*", (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: "Route not found",
+  return res.status(200).json({
+    ResultCode: 0,
+    ResultDesc: "Accepted",
   });
+
 });
 
-/* =====================================================
+/* =========================================
    ERROR HANDLER
-===================================================== */
+========================================= */
 
-app.use(
-  (err, req, res, next) => {
+app.use((err, req, res, next) => {
 
-    console.error(
-      "🔥 Server Error:",
-      err
-    );
+  console.error(err);
 
-    res.status(500).json({
-      success: false,
-      message:
-        err.message ||
-        "Internal Server Error",
-    });
+  res.status(500).json({
+    success: false,
+    message:
+      err.message ||
+      "Internal Server Error",
+  });
 
-  }
-);
+});
 
-/* =====================================================
+/* =========================================
    START SERVER
-===================================================== */
+========================================= */
 
 const PORT =
   process.env.PORT || 3000;
 
-const server = app.listen(
-  PORT,
-  "0.0.0.0",
-  () => {
+app.listen(PORT, () => {
 
-    console.log(
-      "================================"
-    );
+  console.log(
+    `🚀 Biashnet API running on port ${PORT}`
+  );
 
-    console.log(
-      `🚀 Biashnet API Running`
-    );
-
-    console.log(
-      `🌍 Port: ${PORT}`
-    );
-
-    console.log(
-      `📦 Environment: ${
-        process.env.NODE_ENV ||
-        "development"
-      }`
-    );
-
-    console.log(
-      "================================"
-    );
-
-  }
-);
-
-/* =====================================================
-   GRACEFUL SHUTDOWN
-===================================================== */
-
-process.on(
-  "SIGTERM",
-  () => {
-
-    console.log(
-      "⚠️ SIGTERM received"
-    );
-
-    server.close(() => {
-
-      console.log(
-        "🛑 Server closed"
-      );
-
-      process.exit(0);
-
-    });
-
-  }
-);
-
-process.on(
-  "unhandledRejection",
-  (reason) => {
-
-    console.error(
-      "🔥 Unhandled Rejection:",
-      reason
-    );
-
-  }
-);
-
-process.on(
-  "uncaughtException",
-  (error) => {
-
-    console.error(
-      "🔥 Uncaught Exception:",
-      error
-    );
-
-  }
-);
+});
