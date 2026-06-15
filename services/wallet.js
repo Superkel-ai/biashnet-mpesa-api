@@ -17,13 +17,6 @@ async function creditWallet({ phone, amount, receiptNumber }) {
     // RUN AN ATOMIC TRANSACTION (All reads must happen before any writes)
     const result = await db.runTransaction(async (transaction) => {
       
-      // 1. READ TRANSACTION DOC INSIDE THE TX (Anti-Duplicate Check)
-      const txDoc = await transaction.get(txRef);
-      if (txDoc.exists) {
-        console.log("⚠️ Duplicate callback ignored inside transaction:", receiptNumber);
-        return { success: true, message: "Already processed" };
-      }
-
       // 2. READ WALLET DOC INSIDE THE TX
       const walletDoc = await transaction.get(walletRef);
 
