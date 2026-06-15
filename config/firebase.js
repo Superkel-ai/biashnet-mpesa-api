@@ -1,10 +1,14 @@
-const admin = require("firebase-admin");
+const { initializeApp, credential, getApps } = require("firebase-admin/app");
+const { getFirestore } = require("firebase-admin/firestore");
 
 /**
  * SAFE FIREBASE INITIALIZATION (RAILWAY + PRODUCTION SAFE)
  */
 
-if (!admin.apps || admin.apps.length === 0) {
+let db;
+
+// getApps() replaces the old admin.apps check
+if (getApps().length === 0) {
   try {
     const serviceAccount = {
       projectId: process.env.FIREBASE_PROJECT_ID,
@@ -22,8 +26,9 @@ if (!admin.apps || admin.apps.length === 0) {
       throw new Error("Missing Firebase environment variables");
     }
 
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
+    // Call initializeApp and credential directly
+    initializeApp({
+      credential: credential.cert(serviceAccount),
     });
 
     console.log("🔥 Firebase initialized successfully");
@@ -33,6 +38,7 @@ if (!admin.apps || admin.apps.length === 0) {
   }
 }
 
-const db = admin.firestore();
+db = getFirestore();
 
-module.exports = { admin, db };
+// Export db and a compatibility object if other files expect 'admin'
+module.exports = { db };
