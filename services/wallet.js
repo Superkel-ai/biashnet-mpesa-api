@@ -15,25 +15,26 @@ async function creditWallet({ phone, amount, receiptNumber }) {
   const txRef = db.collection("transactions").doc(receiptNumber);
 
   try {
-    // 1. CHECK IF TRANSACTION ALREADY PROCESSED (ANTI-DUPLICATE)
-    const existingTx = await txRef.get();
+    // RUN AN ATOMIC TRANSACTION (All reads must happen before any writes)
+    const result = await db.runTransaction(async (transaction) => {
+      
+      // 1. READ TRANSACTION DOC INSIDE THE TX (Anti-Duplicate Check)
+      const txDoc = await transaction.get(txRef);
+      if (txDoc.exists) {
+        console.log("⚠️ Duplicate callback ignored inside transaction:", receiptNumber);
+        return { success: true, message: "Already processed" };
+      }
 
-    if (existingTx.exists) {
-      console.log("⚠️ Duplicate callback ignored:", receiptNumber);
-      return { success: true, message: "Already processed" };
-    }
-
-    // 2. ATOMIC TRANSACTION (SAFE BALANCE UPDATE)
-    await db.runTransaction(async (transaction) => {
+      // 2. READ WALLET DOC INSIDE THE TX
       const walletDoc = await transaction.get(walletRef);
 
       let newBalance = Number(amount);
-
       if (walletDoc.exists) {
         const current = walletDoc.data().balance || 0;
         newBalance = Number(current) + Number(amount);
       }
 
+      // 3. PERFORM WRITES (Must happen after all reads)
       // Update wallet
       transaction.set(
         walletRef,
@@ -54,14 +55,20 @@ async function creditWallet({ phone, amount, receiptNumber }) {
         status: "SUCCESS",
         createdAt: new Date(),
       });
+
+      return {
+        success: true,
+        message: "Wallet updated successfully",
+      };
     });
 
-    console.log(`✅ Wallet credited: ${phone} +${amount}`);
+    if (result.message === "Already processed") {
+      return result;
+    }
 
-    return {
-      success: true,
-      message: "Wallet updated successfully",
-    };
+    console.log(`✅ Wallet credited: ${phone} +${amount}`);
+    return result;
+
   } catch (error) {
     console.error("❌ Wallet credit error:", error.message);
     throw error;
