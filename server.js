@@ -1,3 +1,6 @@
+const { creditWallet } = require("./services/wallet");
+const { saveTransaction } = require("./services/transactions");
+
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -42,24 +45,62 @@ app.use("/api", stkRoutes);
 /* =========================================
    MPESA CALLBACK
 ========================================= */
+app.post("/callback", async (req, res) => {
+  try {
+    console.log("📩 MPESA CALLBACK");
 
-app.post("/callback", (req, res) => {
+    const callback = req.body.Body?.stkCallback;
 
-  console.log("📩 MPESA CALLBACK");
+    if (!callback) {
+      return res.status(200).json({ ResultCode: 0 });
+    }
 
-  console.log(
-    JSON.stringify(
-      req.body,
-      null,
-      2
-    )
-  );
+    // If payment failed
+    if (callback.ResultCode !== 0) {
+      console.log("❌ Payment failed");
+      return res.status(200).json({ ResultCode: 0 });
+    }
 
-  return res.status(200).json({
-    ResultCode: 0,
-    ResultDesc: "Accepted",
-  });
+    let amount = 0;
+    let phone = "";
+    let receipt = "";
 
+    const items = callback.CallbackMetadata?.Item || [];
+
+    items.forEach((item) => {
+      if (item.Name === "Amount") amount = item.Value;
+      if (item.Name === "PhoneNumber") phone = item.Value;
+      if (item.Name === "MpesaReceiptNumber") receipt = item.Value;
+    });
+
+    const checkoutRequestID = callback.CheckoutRequestID;
+
+    // 1. Save transaction
+    await saveTransaction({
+      checkoutRequestID,
+      phone,
+      amount,
+      receipt,
+      status: "SUCCESS",
+    });
+
+    // 2. Credit wallet
+    await creditWallet(phone, amount);
+
+    console.log("💰 Wallet credited:", phone, amount);
+
+    return res.status(200).json({
+      ResultCode: 0,
+      ResultDesc: "Accepted",
+    });
+
+  } catch (error) {
+    console.error("Callback Error:", error);
+
+    return res.status(200).json({
+      ResultCode: 0,
+    });
+  }
 });
 
 /* =========================================
