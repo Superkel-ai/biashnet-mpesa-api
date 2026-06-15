@@ -7,15 +7,26 @@ const { getFirestore } = require("firebase-admin/firestore");
 
 let db;
 
-// getApps() replaces the old admin.apps check
 if (getApps().length === 0) {
   try {
+    let rawKey = process.env.FIREBASE_PRIVATE_KEY;
+
+    if (rawKey) {
+      // 1. Remove stray enclosing quotes if added by copy-pasting
+      rawKey = rawKey.trim().replace(/^["']|["']$/g, '');
+      
+      // 2. Safely parse both literal '\n' text strings and raw physical linebreaks
+      if (rawKey.includes('\\n')) {
+        rawKey = rawKey.replace(/\\n/g, '\n');
+      } else {
+        rawKey = rawKey.replace(/\r\n/g, '\n');
+      }
+    }
+
     const serviceAccount = {
       projectId: process.env.FIREBASE_PROJECT_ID,
       clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY
-        ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n")
-        : undefined,
+      privateKey: rawKey,
     };
 
     if (
@@ -26,7 +37,7 @@ if (getApps().length === 0) {
       throw new Error("Missing Firebase environment variables");
     }
 
-    // Call initializeApp and credential directly
+    // Initialize with the normalized service account credentials
     initializeApp({
       credential: cert(serviceAccount),
     });
@@ -40,5 +51,4 @@ if (getApps().length === 0) {
 
 db = getFirestore();
 
-// Export db and a compatibility object if other files expect 'admin'
 module.exports = { db };
