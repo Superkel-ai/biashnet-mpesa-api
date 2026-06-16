@@ -3,7 +3,7 @@ const router = express.Router();
 
 const { db } = require("../config/firebase");
 const { stkPush } = require("../services/mpesa");
-const { createWalletIfNotExists } = require("./services/walletInit");
+const { createWalletIfNotExists } = require("../services/walletInit");
 /* =========================================
    STK PUSH
 ========================================= */
