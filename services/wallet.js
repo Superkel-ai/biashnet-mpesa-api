@@ -1,36 +1,44 @@
 const { db } = require("../config/firebase");
 
 /**
- * SAFE WALLET CREDIT SYSTEM
- * - prevents double payments (idempotent)
- * - safe for M-Pesa callback retries
- * - atomic updates using Firestore transaction
+ * CREDIT WALLET (PRODUCTION SAFE)
+ * - Uses userId (NOT phone)
+ * - Prevents duplicate credit using receiptNumber
+ * - Atomic Firestore transaction
  */
-async function creditWallet({ phone, amount, receiptNumber }) {
-  if (!phone || !amount || !receiptNumber) {
+async function creditWallet({ userId, phone, amount, receiptNumber }) {
+  if (!userId || !amount || !receiptNumber) {
     throw new Error("Missing wallet credit parameters");
   }
-    const walletRef = db.collection("wallets").doc(String(phone));
-    const txRef = db.collection("transactions").doc(receiptNumber);
+
+  const walletRef = db.collection("wallets").doc(userId);
+  const txRef = db.collection("transactions").doc(receiptNumber);
 
   try {
-    // RUN AN ATOMIC TRANSACTION (All reads must happen before any writes)
     const result = await db.runTransaction(async (transaction) => {
-      
-      // 2. READ WALLET DOC INSIDE THE TX
+
+      // 1. DUPLICATE CHECK (CRITICAL)
+      const txDoc = await transaction.get(txRef);
+      if (txDoc.exists) {
+        console.log("⚠️ Duplicate transaction ignored:", receiptNumber);
+        return { success: true, message: "Already processed" };
+      }
+
+      // 2. READ WALLET
       const walletDoc = await transaction.get(walletRef);
 
       let newBalance = Number(amount);
+
       if (walletDoc.exists) {
         const current = walletDoc.data().balance || 0;
         newBalance = Number(current) + Number(amount);
       }
 
-      // 3. PERFORM WRITES (Must happen after all reads)
-      // Update wallet
+      // 3. UPDATE WALLET
       transaction.set(
         walletRef,
         {
+          userId,
           phone,
           balance: newBalance,
           updatedAt: new Date(),
@@ -38,19 +46,20 @@ async function creditWallet({ phone, amount, receiptNumber }) {
         { merge: true }
       );
 
-      // Log transaction (IMPORTANT for audit)
+      // 4. LOG TRANSACTION
       transaction.set(txRef, {
+        userId,
         phone,
         amount: Number(amount),
         receiptNumber,
-        type: "CREDIT",
+        type: "DEPOSIT",
         status: "SUCCESS",
         createdAt: new Date(),
       });
 
       return {
         success: true,
-        message: "Wallet updated successfully",
+        message: "Wallet credited successfully",
       };
     });
 
@@ -58,7 +67,7 @@ async function creditWallet({ phone, amount, receiptNumber }) {
       return result;
     }
 
-    console.log(`✅ Wallet credited: ${phone} +${amount}`);
+    console.log(`💰 Wallet credited: ${userId} +${amount}`);
     return result;
 
   } catch (error) {
