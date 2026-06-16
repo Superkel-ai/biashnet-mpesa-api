@@ -86,13 +86,14 @@ if (!receiptNumber) {
     await createWalletIfNotExists(pending.userId, pending.phone);
 
     await saveTransaction({
-      transactionId: receiptNumber,
-      userId: pending.userId,
-      phone: pending.phone,
-      amount,
-      type: "DEPOSIT",
-      status: "SUCCESS",
-    });
+  checkoutRequestID,
+  receiptNumber,
+  userId: pending.userId,
+  phone: pending.phone,
+  amount,
+  type: "DEPOSIT",
+  status: "SUCCESS",
+});
 
     await creditWallet({
       userId: pending.userId,
