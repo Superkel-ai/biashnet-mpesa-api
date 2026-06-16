@@ -63,15 +63,26 @@ app.post("/callback", async (req, res) => {
       return res.json({ ResultCode: 0 });
     }
 
-    let amount = pending.amount;
-    let receiptNumber = "";
+   let amount = requestedAmount;
+let receiptNumber = "";
 
-    const items = callback.CallbackMetadata?.Item || [];
-    items.forEach((i) => {
-      if (i.Name === "Amount") amount = Number(i.Value);
-      if (i.Name === "MpesaReceiptNumber") receiptNumber = String(i.Value);
-    });
+const items = callback.CallbackMetadata?.Item || [];
 
+items.forEach((item) => {
+  if (item.Name === "Amount") {
+    amount = Number(item.Value);
+  }
+
+  if (item.Name === "MpesaReceiptNumber") {
+    receiptNumber = String(item.Value);
+  }
+});
+
+// 🔥 SAFE FALLBACK (VERY IMPORTANT)
+if (!receiptNumber) {
+  console.warn("⚠️ Missing MpesaReceiptNumber, using fallback");
+  receiptNumber = `MPESA_${checkoutRequestID}`;
+}
     await createWalletIfNotExists(pending.userId, pending.phone);
 
     await saveTransaction({
