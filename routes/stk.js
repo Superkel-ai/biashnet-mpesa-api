@@ -4,95 +4,114 @@ const router = express.Router();
 const { db } = require("../config/firebase");
 const { stkPush } = require("../services/mpesa");
 const { createWalletIfNotExists } = require("../services/walletInit");
+
+const { v4: uuidv4 } = require("uuid");
+
 /* =========================================
-   STK PUSH
+   STK PUSH (PRODUCTION SAFE)
 ========================================= */
 router.post("/stkpush", async (req, res) => {
   try {
-    const { userId, phone, amount } = req.body;
+    let { userId, phone, amount } = req.body;
 
-    // Validation
+    // =========================
+    // VALIDATION
+    // =========================
     if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "userId is required",
-      });
+      return res.status(400).json({ success: false, message: "userId is required" });
     }
 
     if (!phone) {
+      return res.status(400).json({ success: false, message: "phone is required" });
+    }
+
+    amount = Number(amount);
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, message: "valid amount is required" });
+    }
+
+    // =========================
+    // NORMALIZE PHONE (IMPORTANT)
+    // =========================
+    if (phone.startsWith("0")) {
+      phone = "254" + phone.slice(1);
+    }
+
+    if (!phone.startsWith("254")) {
       return res.status(400).json({
         success: false,
-        message: "phone is required",
+        message: "phone must be in 2547XXXXXXXX format",
       });
     }
 
-    if (!amount || Number(amount) <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "valid amount is required",
-      });
-    }
-
-    // Send STK Push
+    // =========================
+    // ENSURE WALLET EXISTS
+    // =========================
     await createWalletIfNotExists(userId, phone);
-    const response = await stkPush(
+
+    // =========================
+    // PREVENT DOUBLE SUBMIT (VERY IMPORTANT)
+    // =========================
+    const requestId = uuidv4();
+
+    await db.collection("stkRequests").doc(requestId).set({
+      requestId,
+      userId,
       phone,
-      Number(amount)
-    );
+      amount,
+      status: "INITIATED",
+      createdAt: new Date(),
+    });
+
+    // =========================
+    // CALL M-PESA
+    // =========================
+    const response = await stkPush(phone, amount);
 
     const checkoutRequestID =
-      response.CheckoutRequestID ||
-      response.data?.CheckoutRequestID;
+      response.CheckoutRequestID || response.data?.CheckoutRequestID;
 
     if (!checkoutRequestID) {
-      throw new Error(
-        "CheckoutRequestID missing from M-Pesa response"
-      );
+      throw new Error("CheckoutRequestID missing from M-Pesa response");
     }
 
-    // Save pending transaction
+    // =========================
+    // SAVE PENDING TX (IDEMPOTENT)
+    // =========================
     await db
       .collection("pendingTransactions")
       .doc(checkoutRequestID)
-      .set({
-        checkoutRequestID,
+      .set(
+        {
+          checkoutRequestID,
+          userId,
+          phone,
+          amount,
+          requestId,
+          status: "PENDING",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
 
-        userId,
-
-        phone,
-
-        amount: Number(amount),
-
-        status: "PENDING",
-
-        createdAt: new Date(),
-
-        updatedAt: new Date(),
-      });
-
-    console.log(
-      `🟡 Pending transaction created: ${checkoutRequestID}`
-    );
+    console.log("🟡 Pending transaction created:", checkoutRequestID);
 
     return res.status(200).json({
       success: true,
       message: "STK Push sent",
-
       checkoutRequestID,
-
-      data: response,
+      requestId,
     });
+
   } catch (error) {
-    console.error(
-      "❌ STK Error:",
-      error.response?.data || error.message
-    );
+    console.error("❌ STK Error:", error.response?.data || error.message);
 
     return res.status(500).json({
       success: false,
       message: "STK Push failed",
-      error:
-        error.response?.data || error.message,
+      error: error.response?.data || error.message,
     });
   }
 });

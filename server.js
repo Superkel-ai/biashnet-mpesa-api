@@ -63,7 +63,7 @@ app.post("/callback", async (req, res) => {
       return res.json({ ResultCode: 0 });
     }
 
-   let amount = requestedAmount;
+   let amount = pending.amount;
 let receiptNumber = "";
 
 const items = callback.CallbackMetadata?.Item || [];
