@@ -1,14 +1,21 @@
 const { db } = require("../config/firebase");
 
 /**
- * CREDIT WALLET (PRODUCTION SAFE)
- * - Uses userId (NOT phone)
- * - Prevents duplicate credit using receiptNumber
- * - Atomic Firestore transaction
+ * PRODUCTION WALLET SYSTEM
+ * - Deposit safe
+ * - Duplicate-safe
+ * - Supports withdrawals (locked balance ready)
+ * - Atomic Firestore transactions
  */
+
 async function creditWallet({ userId, phone, amount, receiptNumber }) {
   if (!userId || !amount || !receiptNumber) {
     throw new Error("Missing wallet credit parameters");
+  }
+
+  const amt = Number(amount);
+  if (isNaN(amt) || amt <= 0) {
+    throw new Error("Invalid amount");
   }
 
   const walletRef = db.collection("wallets").doc(userId);
@@ -17,57 +24,67 @@ async function creditWallet({ userId, phone, amount, receiptNumber }) {
   try {
     const result = await db.runTransaction(async (transaction) => {
 
-      // 1. DUPLICATE CHECK (CRITICAL)
+      // 1. DUPLICATE PROTECTION
       const txDoc = await transaction.get(txRef);
       if (txDoc.exists) {
-        console.log("⚠️ Duplicate transaction ignored:", receiptNumber);
         return { success: true, message: "Already processed" };
       }
 
       // 2. READ WALLET
       const walletDoc = await transaction.get(walletRef);
 
-      let newBalance = Number(amount);
+      const data = walletDoc.exists ? walletDoc.data() : null;
 
-      if (walletDoc.exists) {
-        const current = walletDoc.data().balance || 0;
-        newBalance = Number(current) + Number(amount);
-      }
+      const currentBalance = Number(data?.balance || 0);
+      const lockedBalance = Number(data?.lockedBalance || 0);
+      const totalDeposits = Number(data?.totalDeposits || 0);
 
-      // 3. UPDATE WALLET
+      // 3. COMPUTE NEW VALUES
+      const newBalance = currentBalance + amt;
+      const newTotalDeposits = totalDeposits + amt;
+      const availableBalance = newBalance - lockedBalance;
+
+      // 4. WRITE WALLET
       transaction.set(
         walletRef,
         {
           userId,
           phone,
+
           balance: newBalance,
+          lockedBalance: lockedBalance,
+          availableBalance: availableBalance,
+
+          totalDeposits: newTotalDeposits,
+
+          currency: "KES",
+          status: "active",
+
           updatedAt: new Date(),
         },
         { merge: true }
       );
 
-      // 4. LOG TRANSACTION
+      // 5. WRITE TRANSACTION
       transaction.set(txRef, {
         userId,
         phone,
-        amount: Number(amount),
+        amount: amt,
         receiptNumber,
+
         type: "DEPOSIT",
         status: "SUCCESS",
+
         createdAt: new Date(),
       });
 
       return {
         success: true,
         message: "Wallet credited successfully",
+        balance: newBalance,
       };
     });
 
-    if (result.message === "Already processed") {
-      return result;
-    }
-
-    console.log(`💰 Wallet credited: ${userId} +${amount}`);
     return result;
 
   } catch (error) {
@@ -76,4 +93,24 @@ async function creditWallet({ userId, phone, amount, receiptNumber }) {
   }
 }
 
-module.exports = { creditWallet };
+/**
+ * SAFE BALANCE CHECK (for frontend / withdrawal validation)
+ */
+async function getWallet(userId) {
+  const doc = await db.collection("wallets").doc(userId).get();
+
+  if (!doc.exists) {
+    return {
+      balance: 0,
+      availableBalance: 0,
+      lockedBalance: 0,
+    };
+  }
+
+  return doc.data();
+}
+
+module.exports = {
+  creditWallet,
+  getWallet,
+};

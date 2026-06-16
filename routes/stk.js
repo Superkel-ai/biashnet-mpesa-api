@@ -3,7 +3,7 @@ const router = express.Router();
 
 const { db } = require("../config/firebase");
 const { stkPush } = require("../services/mpesa");
-
+const { createWalletIfNotExists } = require("./services/walletInit");
 /* =========================================
    STK PUSH
 ========================================= */
@@ -34,6 +34,7 @@ router.post("/stkpush", async (req, res) => {
     }
 
     // Send STK Push
+    await createWalletIfNotExists(userId, phone);
     const response = await stkPush(
       phone,
       Number(amount)

@@ -1,184 +1,150 @@
-const { creditWallet } = require("./services/wallet");
-const { saveTransaction } = require("./services/transactions");
-const { db } = require("./config/firebase");
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
 
+const { db } = require("./config/firebase");
+const { creditWallet } = require("./services/wallet");
+const { saveTransaction } = require("./services/transactions");
+const { createWalletIfNotExists } = require("./services/walletInit");
+
 const stkRoutes = require("./routes/stk");
+const withdrawRoutes = require("./routes/withdraw");
 
 const app = express();
 
-/* =========================================
+/* =========================
    MIDDLEWARE
-========================================= */
-
+========================= */
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-/* =========================================
+/* =========================
    HEALTH CHECK
-========================================= */
-
+========================= */
 app.get("/", (req, res) => {
-  res.status(200).json({
+  res.json({
     success: true,
     app: "Biashnet M-Pesa API",
     status: "LIVE",
-    environment: process.env.NODE_ENV || "development",
-    timestamp: new Date().toISOString(),
   });
 });
 
-/* =========================================
-   API ROUTES
-========================================= */
-
+/* =========================
+   ROUTES
+========================= */
 app.use("/api", stkRoutes);
+app.use("/api", withdrawRoutes);
 
-/* =========================================
-   MPESA CALLBACK (PRODUCTION)
-========================================= */
+/* =========================
+   MPESA STK CALLBACK
+========================= */
 app.post("/callback", async (req, res) => {
   try {
-    console.log("📩 MPESA CALLBACK RECEIVED");
-
     const callback = req.body?.Body?.stkCallback;
 
-    if (!callback) {
-      return res.status(200).json({
-        ResultCode: 0,
-        ResultDesc: "No callback body",
-      });
-    }
+    if (!callback) return res.json({ ResultCode: 0 });
 
     const checkoutRequestID = callback.CheckoutRequestID;
     const resultCode = callback.ResultCode;
 
-    // Find original deposit request
-    const pendingRef = db
-      .collection("pendingTransactions")
-      .doc(checkoutRequestID);
-
+    const pendingRef = db.collection("pendingTransactions").doc(checkoutRequestID);
     const pendingDoc = await pendingRef.get();
 
     if (!pendingDoc.exists) {
-      throw new Error(
-        `Pending transaction not found: ${checkoutRequestID}`
-      );
+      console.log("Pending not found");
+      return res.json({ ResultCode: 0 });
     }
 
     const pending = pendingDoc.data();
 
-    const userId = pending.userId;
-    const phone = pending.phone;
-    const requestedAmount = pending.amount;
-
-    // Payment failed
     if (resultCode !== 0) {
-      await pendingRef.update({
-        status: "FAILED",
-        resultCode,
-        updatedAt: new Date(),
-      });
-
-      console.log(
-        `❌ Payment failed. ResultCode: ${resultCode}`
-      );
-
-      return res.status(200).json({
-        ResultCode: 0,
-        ResultDesc: "Callback processed",
-      });
+      await pendingRef.update({ status: "FAILED" });
+      return res.json({ ResultCode: 0 });
     }
 
-    let amount = requestedAmount;
+    let amount = pending.amount;
     let receiptNumber = "";
 
-    const items =
-      callback.CallbackMetadata?.Item || [];
-
-    items.forEach((item) => {
-      if (item.Name === "Amount") {
-        amount = Number(item.Value);
-      }
-
-      if (item.Name === "MpesaReceiptNumber") {
-        receiptNumber = String(item.Value);
-      }
+    const items = callback.CallbackMetadata?.Item || [];
+    items.forEach((i) => {
+      if (i.Name === "Amount") amount = Number(i.Value);
+      if (i.Name === "MpesaReceiptNumber") receiptNumber = String(i.Value);
     });
 
-    if (!receiptNumber) {
-      throw new Error("Receipt number missing");
-    }
+    await createWalletIfNotExists(pending.userId, pending.phone);
 
-    // Save permanent transaction
     await saveTransaction({
       transactionId: receiptNumber,
-      checkoutRequestID,
-      userId,
-      phone,
+      userId: pending.userId,
+      phone: pending.phone,
       amount,
-      receiptNumber,
       type: "DEPOSIT",
       status: "SUCCESS",
     });
 
-    // Credit wallet
     await creditWallet({
-      userId,
-      phone,
+      userId: pending.userId,
+      phone: pending.phone,
       amount,
       receiptNumber,
     });
 
-    // Mark pending transaction complete
     await pendingRef.update({
       status: "SUCCESS",
       receiptNumber,
-      completedAt: new Date(),
     });
 
-    console.log(
-      `✅ Deposit completed | User: ${userId} | Amount: ${amount}`
-    );
-
-    return res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: "Accepted",
-    });
-  } catch (error) {
-    console.error(
-      "❌ Callback Error:",
-      error.message
-    );
-
-    return res.status(200).json({
-      ResultCode: 0,
-      ResultDesc: "Error acknowledged",
-    });
+    return res.json({ ResultCode: 0 });
+  } catch (err) {
+    console.error(err);
+    return res.json({ ResultCode: 0 });
   }
 });
 
-/* =========================================
-   ERROR HANDLER
-========================================= */
+/* =========================
+   B2C CALLBACK (WITHDRAWALS)
+========================= */
+app.post("/b2c/result", async (req, res) => {
+  try {
+    const result = req.body?.Result;
+    if (!result) return res.send("OK");
 
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({
-    success: false,
-    message: err.message || "Internal Server Error",
-  });
+    const transactionId = result.TransactionID;
+    const resultCode = result.ResultCode;
+
+    const snap = await db.collection("withdrawalRequests")
+      .where("transactionId", "==", transactionId)
+      .limit(1)
+      .get();
+
+    if (snap.empty) return res.send("OK");
+
+    const doc = snap.docs[0];
+    const data = doc.data();
+
+    if (resultCode === 0) {
+      await doc.ref.update({ status: "PAID" });
+    } else {
+      await db.collection("wallets").doc(data.userId).update({
+        lockedBalance: (data.lockedBalance || 0) - data.amount,
+      });
+
+      await doc.ref.update({ status: "FAILED" });
+    }
+
+    return res.send("OK");
+  } catch (err) {
+    console.error(err);
+    return res.send("OK");
+  }
 });
 
-/* =========================================
+/* =========================
    START SERVER
-========================================= */
-
+========================= */
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Biashnet API running on port ${PORT}`);
+  console.log(`🚀 Server running on ${PORT}`);
 });
