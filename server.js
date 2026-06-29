@@ -6,7 +6,17 @@ const { db } = require("./config/firebase");
 const { creditWallet } = require("./services/wallet");
 const { saveTransaction } = require("./services/transactions");
 const { createWalletIfNotExists } = require("./services/walletInit");
+const {
+syncInvestor
+} = require(
+"./services/investors"
+);
 
+const {
+updateInvestmentStats
+} = require(
+"./services/investmentStats"
+);
 const stkRoutes = require("./routes/stk");
 const withdrawRoutes = require("./routes/withdraw");
 
@@ -101,12 +111,12 @@ if (!receiptNumber) {
       amount,
       receiptNumber,
     });
+await syncInvestor(
+    pending.userId
+);
 
-    await pendingRef.update({
-      status: "SUCCESS",
-      receiptNumber,
-    });
-
+await updateInvestmentStats();
+  await pendingRef.delete();
     return res.json({ ResultCode: 0 });
   } catch (err) {
     console.error(err);
