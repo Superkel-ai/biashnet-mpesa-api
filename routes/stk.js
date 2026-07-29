@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const { db } = require("../config/firebase");
-const { stkPush } = require("../services/mpesa");
+const { initiatePayment } = require("../services/intasend");
 const { createWalletIfNotExists } = require("../services/walletInit");
 
 const { v4: uuidv4 } = require("uuid");
@@ -65,46 +65,49 @@ router.post("/stkpush", async (req, res) => {
     });
 
     // =========================
-    // CALL M-PESA
-    // =========================
-    const response = await stkPush(phone, amount);
+// INITIATE INTASEND PAYMENT
+// =========================
+const response = await initiatePayment(
+  phone,
+  amount,
+  requestId
+);
 
-    const checkoutRequestID =
-      response.CheckoutRequestID || response.data?.CheckoutRequestID;
+// Log the full response so we know the exact fields
+console.log("✅ INTASEND RESPONSE:", JSON.stringify(response, null, 2));
 
-    if (!checkoutRequestID) {
-      throw new Error("CheckoutRequestID missing from M-Pesa response");
-    }
-
-    // =========================
-    // SAVE PENDING TX (IDEMPOTENT)
-    // =========================
-    await db
-      .collection("pendingTransactions")
-      .doc(checkoutRequestID)
-      .set(
-        {
-          checkoutRequestID,
-          userId,
-          phone,
-          amount,
-          requestId,
-          status: "PENDING",
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-        { merge: true }
-      );
-
-    console.log("🟡 Pending transaction created:", checkoutRequestID);
-
-    return res.status(200).json({
-      success: true,
-      message: "STK Push sent",
-      checkoutRequestID,
+// =========================
+// SAVE PENDING TRANSACTION
+// =========================
+await db
+  .collection("pendingTransactions")
+  .doc(requestId)
+  .set(
+    {
       requestId,
-    });
+      userId,
+      phone,
+      amount,
+      status: "PENDING",
+      provider: "INTASEND",
+      response,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    { merge: true }
+  );
 
+console.log("🟡 Pending transaction created:", requestId);
+
+// =========================
+// RETURN RESPONSE
+// =========================
+return res.status(200).json({
+  success: true,
+  message: "Payment request sent successfully.",
+  requestId,
+  response,
+});
   } catch (error) {
     console.error("❌ STK Error:", error.response?.data || error.message);
 

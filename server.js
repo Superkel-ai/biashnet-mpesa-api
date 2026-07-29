@@ -35,7 +35,7 @@ app.use(express.urlencoded({ extended: true }));
 app.get("/", (req, res) => {
   res.json({
     success: true,
-    app: "Biashnet M-Pesa API",
+    app: "Biashnet Payment API",
     status: "LIVE",
   });
 });
@@ -47,83 +47,157 @@ app.use("/api", stkRoutes);
 app.use("/api", withdrawRoutes);
 
 /* =========================
-   MPESA STK CALLBACK
+   INTASEND PAYMENT CALLBACK
 ========================= */
 app.post("/callback", async (req, res) => {
   try {
-    const callback = req.body?.Body?.stkCallback;
 
-    if (!callback) return res.json({ ResultCode: 0 });
+    console.log(
+      "🔥 INTASEND CALLBACK:",
+      JSON.stringify(req.body, null, 2)
+    );
 
-    const checkoutRequestID = callback.CheckoutRequestID;
-    const resultCode = callback.ResultCode;
+    const data = req.body;
 
-    const pendingRef = db.collection("pendingTransactions").doc(checkoutRequestID);
+    if (!data) {
+      return res.sendStatus(200);
+    }
+
+
+    // IntaSend sends invoice/payment details
+    const apiRef =
+      data.api_ref ||
+      data.invoice?.api_ref ||
+      data.reference;
+
+
+    if (!apiRef) {
+      console.log("No payment reference found");
+      return res.sendStatus(200);
+    }
+
+
+    const pendingRef = db
+      .collection("pendingTransactions")
+      .doc(apiRef);
+
+
     const pendingDoc = await pendingRef.get();
 
+
     if (!pendingDoc.exists) {
-      console.log("Pending not found");
-      return res.json({ ResultCode: 0 });
+      console.log("Pending transaction not found:", apiRef);
+      return res.sendStatus(200);
     }
+
 
     const pending = pendingDoc.data();
 
-    if (resultCode !== 0) {
-      await pendingRef.update({ status: "FAILED" });
-      return res.json({ ResultCode: 0 });
+
+    // Check payment status
+    const status =
+      data.state ||
+      data.status;
+
+
+    if (
+      status !== "COMPLETE" &&
+      status !== "SUCCESSFUL" &&
+      status !== "SUCCESS"
+    ) {
+
+      await pendingRef.update({
+        status: "FAILED",
+        callback: data,
+        updatedAt: new Date()
+      });
+
+      return res.sendStatus(200);
     }
 
-   let amount = pending.amount;
-let receiptNumber = "";
 
-const items = callback.CallbackMetadata?.Item || [];
 
-items.forEach((item) => {
-  if (item.Name === "Amount") {
-    amount = Number(item.Value);
-  }
+    const amount =
+      Number(data.amount) ||
+      pending.amount;
 
-  if (item.Name === "MpesaReceiptNumber") {
-    receiptNumber = String(item.Value);
-  }
-});
 
-// 🔥 SAFE FALLBACK (VERY IMPORTANT)
-if (!receiptNumber) {
-  console.warn("⚠️ Missing MpesaReceiptNumber, using fallback");
-  receiptNumber = `MPESA_${checkoutRequestID}`;
-}
-    await createWalletIfNotExists(pending.userId, pending.phone);
+    const receiptNumber =
+      data.mpesa_reference ||
+      data.reference ||
+      `INTASEND_${apiRef}`;
+
+
+
+    await createWalletIfNotExists(
+      pending.userId,
+      pending.phone
+    );
+
 
     await saveTransaction({
-  checkoutRequestID,
-  receiptNumber,
-  userId: pending.userId,
-  phone: pending.phone,
-  amount,
-  type: "DEPOSIT",
-  status: "SUCCESS",
-});
+      checkoutRequestID: apiRef,
+      receiptNumber,
+      userId: pending.userId,
+      phone: pending.phone,
+      amount,
+      type: "DEPOSIT",
+      status: "SUCCESS",
+      provider: "INTASEND"
+    });
 
+
+if (pending.status === "SUCCESS") {
+  console.log("Already processed:", apiRef);
+  return res.sendStatus(200);
+}
     await creditWallet({
       userId: pending.userId,
       phone: pending.phone,
       amount,
-      receiptNumber,
+      receiptNumber
     });
-await syncInvestor(
-    pending.userId
-);
 
-await updateInvestmentStats();
-  await pendingRef.delete();
-    return res.json({ ResultCode: 0 });
+
+
+    await syncInvestor(
+      pending.userId
+    );
+
+
+    await updateInvestmentStats();
+
+
+
+    await pendingRef.update({
+      status: "SUCCESS",
+      receiptNumber,
+      callback: data,
+      updatedAt: new Date()
+    });
+
+
+
+    console.log(
+      "✅ Wallet credited:",
+      pending.userId,
+      amount
+    );
+
+
+    return res.sendStatus(200);
+
+
   } catch (err) {
-    console.error(err);
-    return res.json({ ResultCode: 0 });
+
+    console.error(
+      "❌ IntaSend callback error:",
+      err
+    );
+
+    return res.sendStatus(200);
   }
 });
-
 /* =========================
    B2C CALLBACK (WITHDRAWALS)
 ========================= */
