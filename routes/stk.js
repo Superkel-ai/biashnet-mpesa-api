@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const { db } = require("../config/firebase");
-const { initiatePayment } = require("../services/intasend");
+const { stkPush } = require("../services/mpesa");
 const { createWalletIfNotExists } = require("../services/walletInit");
 
 const { v4: uuidv4 } = require("uuid");
@@ -65,37 +65,35 @@ router.post("/stkpush", async (req, res) => {
     });
 
     // =========================
-// INITIATE INTASEND PAYMENT
+// INITIATE M-PESA STK PUSH
 // =========================
-const response = await initiatePayment(
+const response = await stkPush(
   phone,
   amount,
   requestId
 );
 
 // Log the full response so we know the exact fields
-console.log("✅ INTASEND RESPONSE:", JSON.stringify(response, null, 2));
+console.log("✅ M-PESA RESPONSE:", JSON.stringify(response, null, 2));
 
 // =========================
 // SAVE PENDING TRANSACTION
 // =========================
 await db
   .collection("pendingTransactions")
-  .doc(requestId)
-  .set(
-    {
-      requestId,
-      userId,
-      phone,
-      amount,
-      status: "PENDING",
-      provider: "INTASEND",
-      response,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    { merge: true }
-  );
+  .doc(response.CheckoutRequestID)
+  .set({
+    checkoutRequestID: response.CheckoutRequestID,
+    merchantRequestID: response.MerchantRequestID,
+    apiRef: requestId,
+    userId,
+    phone,
+    amount,
+    status: "PENDING",
+    provider: "MPESA",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
 
 console.log("🟡 Pending transaction created:", requestId);
 
@@ -104,9 +102,9 @@ console.log("🟡 Pending transaction created:", requestId);
 // =========================
 return res.status(200).json({
   success: true,
-  message: "Payment request sent successfully.",
-  requestId,
-  response,
+  message: response.CustomerMessage,
+  checkoutRequestID: response.CheckoutRequestID,
+  merchantRequestID: response.MerchantRequestID,
 });
   } catch (error) {
     console.error("❌ STK Error:", error.response?.data || error.message);
