@@ -40,7 +40,7 @@ function getTimestamp() {
 /* =========================
    STK PUSH
 ========================= */
-async function stkPush(phone, amount) {
+async function stkPush(phone, amount, accountReference = "BIASHNET") {
   const token = await getAccessToken();
 
   if (phone.startsWith("0")) {
@@ -67,8 +67,8 @@ async function stkPush(phone, amount) {
       PartyB: process.env.MPESA_SHORTCODE,
       PhoneNumber: phone,
       CallBackURL: process.env.CALLBACK_URL,
-      AccountReference: "BIASHNET",
-      TransactionDesc: "BIASHNET Payment",
+      AccountReference: accountReference,
+      TransactionDesc: `BIASHNET ${accountReference}`,
     },
     {
       headers: {

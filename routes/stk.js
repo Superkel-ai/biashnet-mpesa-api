@@ -12,8 +12,13 @@ const { v4: uuidv4 } = require("uuid");
 ========================================= */
 router.post("/stkpush", async (req, res) => {
   try {
-    let { userId, phone, amount } = req.body;
-
+    let {
+  userId,
+  phone,
+  amount,
+  paymentType,
+  referenceId
+} = req.body;
     // =========================
     // VALIDATION
     // =========================
@@ -46,6 +51,33 @@ router.post("/stkpush", async (req, res) => {
     }
 
     // =========================
+// CREATE MPESA ACCOUNT REFERENCE
+// =========================
+
+let accountReference = "BIASHNET";
+
+if (paymentType === "INVESTMENT") {
+
+  accountReference =
+    `INVEST-${referenceId?.slice(0,8)}`;
+
+}
+
+if (paymentType === "ORDER") {
+
+  accountReference =
+    `ORDER-${referenceId?.slice(0,8)}`;
+
+}
+
+if (paymentType === "WALLET") {
+
+  accountReference =
+    `WALLET-${referenceId?.slice(0,8)}`;
+
+}
+
+    // =========================
     // ENSURE WALLET EXISTS
     // =========================
     await createWalletIfNotExists(userId, phone);
@@ -70,7 +102,7 @@ router.post("/stkpush", async (req, res) => {
 const response = await stkPush(
   phone,
   amount,
-  requestId
+  accountReference
 );
 
 // Log the full response so we know the exact fields
