@@ -16,6 +16,7 @@ async function saveTransaction(data) {
       checkoutRequestID,
       receiptNumber,
       phone,
+      userId,
       amount,
       status = "PENDING",
       type = "STK",
@@ -49,6 +50,7 @@ async function saveTransaction(data) {
         amount: amount ? Number(amount) : null,
         status,
         type,
+        userId: userId || null,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
