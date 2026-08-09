@@ -8,7 +8,7 @@ const stkRoutes = require("./routes/stk");
 const withdrawRoutes = require("./routes/withdraw");
 const callbackRoutes = require("./routes/callback");
 const adminInvestorRoutes = require("./routes/adminInvestors");
-
+const adminActualRoutes = require("./routes/adminActual");
 
 const app = express();
 
@@ -78,6 +78,14 @@ app.use(
   adminInvestorRoutes
 );
 
+/* =========================
+   ADMIN ACTUAL / EXPENSE ROUTES
+========================= */
+
+app.use(
+  "/api/admin/actual",
+  adminActualRoutes
+);
 
 /* =========================
    B2C CALLBACK
