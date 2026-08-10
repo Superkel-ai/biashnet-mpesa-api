@@ -15,14 +15,19 @@ const {
 AUTHENTICATION MIDDLEWARE
 =========================================================
 
-The buyer ID MUST come from the Firebase ID token.
+Firebase:
 
-Never trust:
+Frontend
+   ↓
+Firebase ID Token
+   ↓
+Authorization: Bearer TOKEN
+   ↓
+verifyIdToken()
+   ↓
+req.user.uid
 
-req.body.userId
-
-because a malicious user could simply change it and
-create an order under another user's account.
+NEVER accept buyerId from req.body.
 =========================================================
 */
 
@@ -52,10 +57,30 @@ async function authenticateUser(req, res, next) {
 
 
         const token =
-            authorization.split("Bearer ")[1];
+            authorization.substring(7).trim();
 
 
         if (!token) {
+
+            return res.status(401).json({
+
+                success: false,
+
+                message:
+                    "Authentication token is missing.",
+
+            });
+
+        }
+
+
+        const decodedToken =
+            await getAuth().verifyIdToken(
+                token
+            );
+
+
+        if (!decodedToken?.uid) {
 
             return res.status(401).json({
 
@@ -69,11 +94,11 @@ async function authenticateUser(req, res, next) {
         }
 
 
-        const decodedToken =
-            await getAuth().verifyIdToken(
-                token
-            );
-
+        /*
+        ---------------------------------------------
+        ATTACH AUTHENTICATED USER
+        ---------------------------------------------
+        */
 
         req.user = decodedToken;
 
@@ -105,6 +130,51 @@ async function authenticateUser(req, res, next) {
 
 /*
 =========================================================
+VALIDATE PAYMENT METHOD
+=========================================================
+*/
+
+function normalizePaymentMethod(
+    paymentMethod
+) {
+
+    const method =
+        String(
+            paymentMethod || "MPESA"
+        )
+        .trim()
+        .toUpperCase();
+
+
+    const allowed = [
+
+        "MPESA",
+
+        "CARD",
+
+        "WALLET",
+
+    ];
+
+
+    if (
+        !allowed.includes(method)
+    ) {
+
+        throw new Error(
+            "Unsupported payment method. Use MPESA, CARD or WALLET."
+        );
+
+    }
+
+
+    return method;
+
+}
+
+
+/*
+=========================================================
 CREATE MARKETPLACE ORDER
 =========================================================
 
@@ -112,8 +182,15 @@ POST
 
 /api/marketplace/orders
 
-The buyer ID is taken from the authenticated Firebase
-user, NOT from the request body.
+IMPORTANT:
+
+listingId = Firestore document ID from:
+
+products/{listingId}
+
+The route does NOT expect:
+
+productId field inside Firestore.
 
 =========================================================
 */
@@ -125,9 +202,21 @@ router.post(
 
         try {
 
+            /*
+            =============================================
+            BUYER
+            =============================================
+            */
+
             const buyerId =
                 req.user.uid;
 
+
+            /*
+            =============================================
+            REQUEST DATA
+            =============================================
+            */
 
             const {
 
@@ -139,16 +228,25 @@ router.post(
 
                 paymentMethod = "MPESA",
 
+                buyerPhone = "",
+
+                deliveryLocation = "",
+
+                deliveryNote = "",
+
             } = req.body;
 
 
             /*
             =============================================
-            VALIDATION
+            LISTING ID
             =============================================
             */
 
-            if (!listingId) {
+            if (
+                typeof listingId !== "string" ||
+                !listingId.trim()
+            ) {
 
                 return res.status(400).json({
 
@@ -161,6 +259,16 @@ router.post(
 
             }
 
+
+            const cleanListingId =
+                listingId.trim();
+
+
+            /*
+            =============================================
+            QUANTITY
+            =============================================
+            */
 
             const parsedQuantity =
                 Number(quantity);
@@ -185,8 +293,16 @@ router.post(
             }
 
 
+            /*
+            =============================================
+            DELIVERY FEE
+            =============================================
+            */
+
             const parsedDeliveryFee =
-                Number(deliveryFee || 0);
+                Number(
+                    deliveryFee || 0
+                );
 
 
             if (
@@ -210,43 +326,96 @@ router.post(
 
             /*
             =============================================
-            ALLOWED PAYMENT METHODS
+            PAYMENT METHOD
             =============================================
             */
 
-            const allowedPaymentMethods = [
-
-                "MPESA",
-
-                "CARD",
-
-                "BANK",
-
-            ];
+            let normalizedPaymentMethod;
 
 
-            const normalizedPaymentMethod =
-                String(paymentMethod)
-                    .trim()
-                    .toUpperCase();
+            try {
 
+                normalizedPaymentMethod =
+                    normalizePaymentMethod(
+                        paymentMethod
+                    );
 
-            if (
-                !allowedPaymentMethods.includes(
-                    normalizedPaymentMethod
-                )
-            ) {
+            } catch (error) {
 
                 return res.status(400).json({
 
                     success: false,
 
                     message:
-                        "Unsupported payment method.",
+                        error.message,
 
                 });
 
             }
+
+
+            /*
+            =============================================
+            PHONE
+            =============================================
+            */
+
+            const cleanBuyerPhone =
+                String(
+                    buyerPhone || ""
+                ).trim();
+
+
+            if (!cleanBuyerPhone) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Buyer phone number is required.",
+
+                });
+
+            }
+
+
+            /*
+            =============================================
+            DELIVERY LOCATION
+            =============================================
+            */
+
+            const cleanDeliveryLocation =
+                String(
+                    deliveryLocation || ""
+                ).trim();
+
+
+            if (!cleanDeliveryLocation) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    message:
+                        "Delivery location is required.",
+
+                });
+
+            }
+
+
+            /*
+            =============================================
+            DELIVERY NOTE
+            =============================================
+            */
+
+            const cleanDeliveryNote =
+                String(
+                    deliveryNote || ""
+                ).trim();
 
 
             /*
@@ -258,18 +427,45 @@ router.post(
             const result =
                 await createMarketplaceOrder({
 
+                    /*
+                    SECURITY:
+                    buyerId comes ONLY from
+                    Firebase authentication.
+                    */
+
                     buyerId,
 
-                    listingId,
+
+                    /*
+                    products/{listingId}
+                    */
+
+                    listingId:
+                        cleanListingId,
+
 
                     quantity:
                         parsedQuantity,
 
+
                     deliveryFee:
                         parsedDeliveryFee,
 
+
                     paymentMethod:
                         normalizedPaymentMethod,
+
+
+                    buyerPhone:
+                        cleanBuyerPhone,
+
+
+                    deliveryLocation:
+                        cleanDeliveryLocation,
+
+
+                    deliveryNote:
+                        cleanDeliveryNote,
 
                 });
 
@@ -287,7 +483,20 @@ router.post(
                 message:
                     "Marketplace order created successfully.",
 
-                order: result,
+
+                /*
+                Convenient for CheckoutDialog
+                */
+
+                orderId:
+                    result.orderId,
+
+                paymentId:
+                    result.paymentId,
+
+
+                order:
+                    result,
 
             });
 
@@ -300,13 +509,251 @@ router.post(
             );
 
 
+            /*
+            =============================================
+            KNOWN BUSINESS ERRORS
+            =============================================
+            */
+
+            const message =
+                error?.message ||
+                "Failed to create marketplace order.";
+
+
+            /*
+            Most service validation errors
+            are client/business errors.
+            */
+
             return res.status(400).json({
 
                 success: false,
 
+                message,
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=========================================================
+GET BUYER ORDERS
+=========================================================
+
+GET
+
+/api/marketplace/orders/buyer/my-orders
+
+MUST COME BEFORE /:orderId
+=========================================================
+*/
+
+router.get(
+    "/buyer/my-orders",
+    authenticateUser,
+    async (req, res) => {
+
+        try {
+
+            const buyerId =
+                req.user.uid;
+
+
+            const snapshot =
+                await db
+                    .collection(
+                        "marketplaceOrders"
+                    )
+                    .where(
+                        "buyerId",
+                        "==",
+                        buyerId
+                    )
+                    .orderBy(
+                        "createdAt",
+                        "desc"
+                    )
+                    .get();
+
+
+            const orders =
+                snapshot.docs.map(
+                    (doc) => ({
+
+                        id:
+                            doc.id,
+
+                        ...doc.data(),
+
+                    })
+                );
+
+
+            return res.status(200).json({
+
+                success: true,
+
+                count:
+                    orders.length,
+
+                orders,
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "❌ Get buyer orders error:",
+                error
+            );
+
+
+            /*
+            Firestore may require an index for:
+
+            where(buyerId)
+            +
+            orderBy(createdAt)
+            */
+
+            if (
+                error.code ===
+                "failed-precondition"
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firestore requires an index for buyer orders.",
+
+                    error:
+                        error.message,
+
+                });
+
+            }
+
+
+            return res.status(500).json({
+
+                success: false,
+
                 message:
-                    error.message ||
-                    "Failed to create marketplace order.",
+                    "Failed to retrieve buyer orders.",
+
+            });
+
+        }
+
+    }
+);
+
+
+/*
+=========================================================
+GET SELLER ORDERS
+=========================================================
+
+GET
+
+/api/marketplace/orders/seller/my-orders
+=========================================================
+*/
+
+router.get(
+    "/seller/my-orders",
+    authenticateUser,
+    async (req, res) => {
+
+        try {
+
+            const sellerId =
+                req.user.uid;
+
+
+            const snapshot =
+                await db
+                    .collection(
+                        "marketplaceOrders"
+                    )
+                    .where(
+                        "sellerId",
+                        "==",
+                        sellerId
+                    )
+                    .orderBy(
+                        "createdAt",
+                        "desc"
+                    )
+                    .get();
+
+
+            const orders =
+                snapshot.docs.map(
+                    (doc) => ({
+
+                        id:
+                            doc.id,
+
+                        ...doc.data(),
+
+                    })
+                );
+
+
+            return res.status(200).json({
+
+                success: true,
+
+                count:
+                    orders.length,
+
+                orders,
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "❌ Get seller orders error:",
+                error
+            );
+
+
+            if (
+                error.code ===
+                "failed-precondition"
+            ) {
+
+                return res.status(500).json({
+
+                    success: false,
+
+                    message:
+                        "Firestore requires an index for seller orders.",
+
+                    error:
+                        error.message,
+
+                });
+
+            }
+
+
+            return res.status(500).json({
+
+                success: false,
+
+                message:
+                    "Failed to retrieve seller orders.",
 
             });
 
@@ -325,8 +772,13 @@ GET
 
 /api/marketplace/orders/:orderId
 
-Only the buyer or seller involved in the order can
-retrieve it.
+Only:
+
+BUYER
+or
+SELLER
+
+can access the order.
 
 =========================================================
 */
@@ -343,7 +795,10 @@ router.get(
             } = req.params;
 
 
-            if (!orderId) {
+            if (
+                !orderId ||
+                !orderId.trim()
+            ) {
 
                 return res.status(400).json({
 
@@ -362,7 +817,9 @@ router.get(
                     .collection(
                         "marketplaceOrders"
                     )
-                    .doc(orderId);
+                    .doc(
+                        orderId.trim()
+                    );
 
 
             const orderSnap =
@@ -454,186 +911,6 @@ router.get(
 
                 message:
                     "Failed to retrieve order.",
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=========================================================
-GET BUYER ORDERS
-=========================================================
-
-GET
-
-/api/marketplace/orders/buyer/my-orders
-
-The buyer ID comes from Firebase authentication.
-
-=========================================================
-*/
-
-router.get(
-    "/buyer/my-orders",
-    authenticateUser,
-    async (req, res) => {
-
-        try {
-
-            const buyerId =
-                req.user.uid;
-
-
-            const snapshot =
-                await db
-                    .collection(
-                        "marketplaceOrders"
-                    )
-                    .where(
-                        "buyerId",
-                        "==",
-                        buyerId
-                    )
-                    .orderBy(
-                        "createdAt",
-                        "desc"
-                    )
-                    .get();
-
-
-            const orders =
-                snapshot.docs.map(
-                    (doc) => ({
-
-                        id:
-                            doc.id,
-
-                        ...doc.data(),
-
-                    })
-                );
-
-
-            return res.status(200).json({
-
-                success: true,
-
-                count:
-                    orders.length,
-
-                orders,
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "❌ Get buyer orders error:",
-                error
-            );
-
-
-            return res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Failed to retrieve buyer orders.",
-
-            });
-
-        }
-
-    }
-);
-
-
-/*
-=========================================================
-GET SELLER ORDERS
-=========================================================
-
-GET
-
-/api/marketplace/orders/seller/my-orders
-
-The seller ID comes from Firebase authentication.
-
-=========================================================
-*/
-
-router.get(
-    "/seller/my-orders",
-    authenticateUser,
-    async (req, res) => {
-
-        try {
-
-            const sellerId =
-                req.user.uid;
-
-
-            const snapshot =
-                await db
-                    .collection(
-                        "marketplaceOrders"
-                    )
-                    .where(
-                        "sellerId",
-                        "==",
-                        sellerId
-                    )
-                    .orderBy(
-                        "createdAt",
-                        "desc"
-                    )
-                    .get();
-
-
-            const orders =
-                snapshot.docs.map(
-                    (doc) => ({
-
-                        id:
-                            doc.id,
-
-                        ...doc.data(),
-
-                    })
-                );
-
-
-            return res.status(200).json({
-
-                success: true,
-
-                count:
-                    orders.length,
-
-                orders,
-
-            });
-
-
-        } catch (error) {
-
-            console.error(
-                "❌ Get seller orders error:",
-                error
-            );
-
-
-            return res.status(500).json({
-
-                success: false,
-
-                message:
-                    "Failed to retrieve seller orders.",
 
             });
 

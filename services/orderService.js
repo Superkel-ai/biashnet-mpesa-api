@@ -9,6 +9,30 @@ const {
 
 /*
 =========================================================
+COLLECTIONS
+
+IMPORTANT:
+Marketplace uses its own collections.
+
+DO NOT use:
+- investor transactions
+- investor wallets
+- investor withdrawalRequests
+=========================================================
+*/
+
+const PRODUCTS_COLLECTION =
+    "products";
+
+const ORDERS_COLLECTION =
+    "marketplaceOrders";
+
+const PAYMENTS_COLLECTION =
+    "marketplacePayments";
+
+
+/*
+=========================================================
 GENERATE ORDER ID
 =========================================================
 */
@@ -53,7 +77,47 @@ function generatePaymentId() {
 
 /*
 =========================================================
+ROUND MONEY
+=========================================================
+*/
+
+function money(value) {
+
+    return Number(
+        Number(value || 0).toFixed(2)
+    );
+
+}
+
+
+/*
+=========================================================
 CREATE MARKETPLACE ORDER
+=========================================================
+
+Buyer flow:
+
+Firebase Auth
+      ↓
+req.user.uid
+      ↓
+buyerId
+      ↓
+products/{listingId}
+      ↓
+verify seller
+      ↓
+verify price
+      ↓
+verify stock
+      ↓
+calculate commission
+      ↓
+reserve stock
+      ↓
+create marketplace order
+      ↓
+create marketplace payment
 =========================================================
 */
 
@@ -68,6 +132,12 @@ async function createMarketplaceOrder({
     deliveryFee = 0,
 
     paymentMethod = "MPESA",
+
+    buyerPhone = "",
+
+    deliveryLocation = "",
+
+    deliveryNote = "",
 
 }) {
 
@@ -115,7 +185,9 @@ async function createMarketplaceOrder({
 
 
     const delivery =
-        Number(deliveryFee || 0);
+        Number(
+            deliveryFee || 0
+        );
 
 
     if (
@@ -132,15 +204,71 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    GET LISTING
+    NORMALIZE PAYMENT METHOD
+    =====================================================
+    */
+
+    const normalizedPaymentMethod =
+        String(
+            paymentMethod || "MPESA"
+        )
+        .trim()
+        .toUpperCase();
+
+
+    const allowedPaymentMethods = [
+        "MPESA",
+        "CARD",
+        "WALLET"
+    ];
+
+
+    if (
+        !allowedPaymentMethods.includes(
+            normalizedPaymentMethod
+        )
+    ) {
+
+        throw new Error(
+            "Unsupported payment method."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    PRODUCT REFERENCE
+    =====================================================
+
+    IMPORTANT:
+
+    The Firestore document ID is the listingId.
+
+    products/
+        {listingId}
+
+    We DO NOT search:
+
+    where("id", "==", listingId)
+
+    because id is not stored as a field.
     =====================================================
     */
 
     const listingRef =
         db
-            .collection("marketListings")
+            .collection(
+                PRODUCTS_COLLECTION
+            )
             .doc(listingId);
 
+
+    /*
+    =====================================================
+    READ PRODUCT
+    =====================================================
+    */
 
     const listingSnap =
         await listingRef.get();
@@ -149,7 +277,7 @@ async function createMarketplaceOrder({
     if (!listingSnap.exists) {
 
         throw new Error(
-            "Marketplace listing not found."
+            "Marketplace product not found."
         );
 
     }
@@ -161,29 +289,28 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    VERIFY SELLER
+    VERIFY PRODUCT STATUS
     =====================================================
     */
 
-    const sellerId =
-        listing.sellerId ||
-        listing.userId ||
-        listing.ownerId;
-
-
-    if (!sellerId) {
+    if (
+        listing.isActive === false
+    ) {
 
         throw new Error(
-            "This listing does not have a valid seller."
+            "This product is currently inactive."
         );
 
     }
 
 
-    if (sellerId === buyerId) {
+    if (
+        listing.status &&
+        listing.status !== "approved"
+    ) {
 
         throw new Error(
-            "You cannot purchase your own listing."
+            "This product is not currently available for purchase."
         );
 
     }
@@ -191,7 +318,53 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    GET PRICE
+    VERIFY SELLER
+    =====================================================
+
+    Your products collection uses:
+
+    userId = seller Firebase UID
+    =====================================================
+    */
+
+    const sellerId =
+        listing.userId;
+
+
+    if (!sellerId) {
+
+        throw new Error(
+            "This product does not have a valid seller."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    PREVENT SELF PURCHASE
+    =====================================================
+    */
+
+    if (
+        sellerId === buyerId
+    ) {
+
+        throw new Error(
+            "You cannot purchase your own product."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    SERVER-SIDE PRICE
+    =====================================================
+
+    NEVER trust price coming from React.
+
+    The backend uses Firestore price.
     =====================================================
     */
 
@@ -207,7 +380,7 @@ async function createMarketplaceOrder({
     ) {
 
         throw new Error(
-            "This listing has an invalid price."
+            "This product has an invalid price."
         );
 
     }
@@ -215,28 +388,45 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    CHECK STOCK
+    STOCK
     =====================================================
     */
+
+    let availableStock = null;
+
 
     if (
         listing.stock !== undefined &&
         listing.stock !== null
     ) {
 
-        const stock =
+        availableStock =
             Number(
                 listing.stock
             );
 
 
         if (
-            !Number.isFinite(stock) ||
-            stock < orderQuantity
+            !Number.isFinite(
+                availableStock
+            ) ||
+            availableStock < 0
         ) {
 
             throw new Error(
-                "Insufficient stock."
+                "This product has invalid stock information."
+            );
+
+        }
+
+
+        if (
+            availableStock <
+            orderQuantity
+        ) {
+
+            throw new Error(
+                `Only ${availableStock} item(s) available.`
             );
 
         }
@@ -246,48 +436,40 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    CALCULATE TOTAL
-    =====================================================
-    */
-
-    const subtotal =
-        Number(
-            (
-                unitPrice *
-                orderQuantity
-            ).toFixed(2)
-        );
-
-
-    const buyerTotal =
-        Number(
-            (
-                subtotal +
-                delivery
-            ).toFixed(2)
-        );
-
-
-    /*
-    =====================================================
     CATEGORY
     =====================================================
     */
 
     const category =
-        listing.category ||
-        listing.categoryName ||
-        "general";
+        String(
+            listing.category ||
+            listing.categoryName ||
+            "general"
+        )
+        .trim();
+
+
+    /*
+    =====================================================
+    CALCULATE SUBTOTAL
+    =====================================================
+    */
+
+    const subtotal =
+        money(
+            unitPrice *
+            orderQuantity
+        );
 
 
     /*
     =====================================================
     COMMISSION
+    =====================================================
 
-    Commission is calculated against the product/
-    service value.
+    Commission applies to the product/service value.
 
-    Delivery is NOT included in commission.
+    Delivery fee is NOT included.
     =====================================================
     */
 
@@ -304,7 +486,84 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    ORDER ID
+    BUYER TOTAL
+    =====================================================
+    */
+
+    const buyerTotal =
+        money(
+            subtotal +
+            delivery
+        );
+
+
+    /*
+    =====================================================
+    VERIFY COMMISSION RESPONSE
+    =====================================================
+    */
+
+    const commissionAmount =
+        money(
+            commission.commissionAmount
+        );
+
+
+    const sellerGross =
+        money(
+            commission.sellerGross
+        );
+
+
+    if (
+        commissionAmount < 0 ||
+        sellerGross < 0
+    ) {
+
+        throw new Error(
+            "Invalid commission calculation."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    FINANCIAL CONSISTENCY CHECK
+    =====================================================
+
+    Product amount should equal:
+
+    BIASHNET commission
+           +
+    seller gross
+    =====================================================
+    */
+
+    const financialTotal =
+        money(
+            commissionAmount +
+            sellerGross
+        );
+
+
+    if (
+        Math.abs(
+            financialTotal -
+            subtotal
+        ) > 0.01
+    ) {
+
+        throw new Error(
+            "Commission calculation is financially inconsistent."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    GENERATE IDS
     =====================================================
     */
 
@@ -324,13 +583,17 @@ async function createMarketplaceOrder({
 
     const orderRef =
         db
-            .collection("marketplaceOrders")
+            .collection(
+                ORDERS_COLLECTION
+            )
             .doc(orderId);
 
 
     const paymentRef =
         db
-            .collection("marketplacePayments")
+            .collection(
+                PAYMENTS_COLLECTION
+            )
             .doc(paymentId);
 
 
@@ -340,17 +603,29 @@ async function createMarketplaceOrder({
 
     /*
     =====================================================
-    CREATE ORDER + PAYMENT ATOMICALLY
+    ATOMIC ORDER CREATION
+    =====================================================
+
+    This transaction:
+
+    1. Re-reads product
+    2. Re-checks stock
+    3. Re-checks seller
+    4. Re-checks price
+    5. Reserves stock
+    6. Creates order
+    7. Creates payment record
+
+    All happen atomically.
     =====================================================
     */
 
     await db.runTransaction(
-        async (marketplaceTransaction) => {
-
+        async (transaction) => {
 
             /*
             ---------------------------------------------
-            RECHECK LISTING INSIDE TRANSACTION
+            RE-READ PRODUCT
             ---------------------------------------------
             */
 
@@ -365,7 +640,7 @@ async function createMarketplaceOrder({
             ) {
 
                 throw new Error(
-                    "Listing no longer exists."
+                    "Product is no longer available."
                 );
 
             }
@@ -377,7 +652,109 @@ async function createMarketplaceOrder({
 
             /*
             ---------------------------------------------
-            RECHECK STOCK
+            PRODUCT STATUS
+            ---------------------------------------------
+            */
+
+            if (
+                freshListing.isActive === false
+            ) {
+
+                throw new Error(
+                    "Product is no longer active."
+                );
+
+            }
+
+
+            if (
+                freshListing.status &&
+                freshListing.status !== "approved"
+            ) {
+
+                throw new Error(
+                    "Product is no longer available."
+                );
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            SELLER RECHECK
+            ---------------------------------------------
+            */
+
+            const freshSellerId =
+                freshListing.userId;
+
+
+            if (!freshSellerId) {
+
+                throw new Error(
+                    "Product seller information is missing."
+                );
+
+            }
+
+
+            if (
+                freshSellerId !== sellerId
+            ) {
+
+                throw new Error(
+                    "Product seller changed. Please try again."
+                );
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            PRICE RECHECK
+            ---------------------------------------------
+            */
+
+            const freshPrice =
+                Number(
+                    freshListing.price
+                );
+
+
+            if (
+                !Number.isFinite(
+                    freshPrice
+                ) ||
+                freshPrice <= 0
+            ) {
+
+                throw new Error(
+                    "Product price is invalid."
+                );
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            PREVENT PRICE RACE CONDITION
+            ---------------------------------------------
+            */
+
+            if (
+                freshPrice !== unitPrice
+            ) {
+
+                throw new Error(
+                    "Product price has changed. Please refresh and try again."
+                );
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            STOCK RECHECK
             ---------------------------------------------
             */
 
@@ -395,6 +772,9 @@ async function createMarketplaceOrder({
 
 
                 if (
+                    !Number.isFinite(
+                        currentStock
+                    ) ||
                     currentStock <
                     orderQuantity
                 ) {
@@ -431,7 +811,49 @@ async function createMarketplaceOrder({
 
             /*
             ---------------------------------------------
-            ORDER
+            PRODUCT IMAGE
+            ---------------------------------------------
+            */
+
+            const productImage =
+                freshListing.images?.[0]?.thumb ||
+                freshListing.images?.[0]?.full ||
+                freshListing.image ||
+                freshListing.imageUrl ||
+                null;
+
+
+            /*
+            ---------------------------------------------
+            PRODUCT TITLE
+            ---------------------------------------------
+            */
+
+            const productName =
+                freshListing.title ||
+                freshListing.name ||
+                "Marketplace Item";
+
+
+            /*
+            ---------------------------------------------
+            CATEGORY
+            ---------------------------------------------
+            */
+
+            const freshCategory =
+                String(
+                    freshListing.category ||
+                    freshListing.categoryName ||
+                    category ||
+                    "general"
+                )
+                .trim();
+
+
+            /*
+            ---------------------------------------------
+            ORDER DOCUMENT
             ---------------------------------------------
             */
 
@@ -439,26 +861,29 @@ async function createMarketplaceOrder({
                 orderRef,
                 {
 
+                    /*
+                    IDENTIFICATION
+                    */
+
                     orderId,
+
+                    listingId,
 
                     buyerId,
 
                     sellerId,
 
-                    listingId,
 
-                    productName:
-                        listing.name ||
-                        listing.title ||
-                        "Marketplace Item",
+                    /*
+                    PRODUCT SNAPSHOT
+                    */
 
-                    productImage:
-                        listing.image ||
-                        listing.imageUrl ||
-                        null,
+                    productName,
+
+                    productImage,
 
                     category:
-                        commission.category,
+                        freshCategory,
 
                     quantity:
                         orderQuantity,
@@ -467,15 +892,37 @@ async function createMarketplaceOrder({
 
                     subtotal,
 
+
+                    /*
+                    DELIVERY
+                    */
+
                     deliveryFee:
                         delivery,
 
                     buyerTotal,
 
+                    deliveryLocation:
+                        String(
+                            deliveryLocation ||
+                            ""
+                        ).trim(),
+
+                    buyerPhone:
+                        String(
+                            buyerPhone ||
+                            ""
+                        ).trim(),
+
+                    deliveryNote:
+                        String(
+                            deliveryNote ||
+                            ""
+                        ).trim(),
+
+
                     /*
-                    -------------------------------------
-                    FINANCIAL BREAKDOWN
-                    -------------------------------------
+                    FINANCIAL SNAPSHOT
                     */
 
                     commissionRate:
@@ -484,19 +931,36 @@ async function createMarketplaceOrder({
                     commissionPercentage:
                         commission.commissionPercentage,
 
-                    commissionAmount:
-                        commission.commissionAmount,
+                    commissionAmount,
 
-                    sellerGross:
-                        commission.sellerGross,
+                    sellerGross,
 
                     sellerNet:
-                        commission.sellerGross,
+                        sellerGross,
+
 
                     /*
-                    -------------------------------------
-                    STATUS
-                    -------------------------------------
+                    MONEY FLOW STATUS
+                    */
+
+                    fundsReceived:
+                        false,
+
+                    fundsHeld:
+                        false,
+
+                    sellerWalletCredited:
+                        false,
+
+                    sellerPaymentStatus:
+                        "NOT_RELEASED",
+
+                    payoutStatus:
+                        "NOT_RELEASED",
+
+
+                    /*
+                    ORDER STATUS
                     */
 
                     status:
@@ -505,18 +969,29 @@ async function createMarketplaceOrder({
                     paymentStatus:
                         "PENDING",
 
-                    sellerPaymentStatus:
-                        "NOT_RELEASED",
+                    deliveryStatus:
+                        "NOT_STARTED",
 
-                    payoutStatus:
-                        "NOT_RELEASED",
+                    completionCodeStatus:
+                        "NOT_GENERATED",
 
                     refundStatus:
                         "NOT_REFUNDED",
 
+
+                    /*
+                    PAYMENT
+                    */
+
                     paymentId,
 
-                    paymentMethod,
+                    paymentMethod:
+                        normalizedPaymentMethod,
+
+
+                    /*
+                    TIMESTAMPS
+                    */
 
                     createdAt:
                         now,
@@ -527,10 +1002,9 @@ async function createMarketplaceOrder({
                 }
             );
 
-
-            /*
+/*
             ---------------------------------------------
-            PAYMENT RECORD
+            PAYMENT DOCUMENT
             ---------------------------------------------
             */
 
@@ -542,26 +1016,83 @@ async function createMarketplaceOrder({
 
                     orderId,
 
+                    listingId,
+
                     buyerId,
 
                     sellerId,
 
+
+                    /*
+                    PAYMENT AMOUNT
+                    */
+
                     amount:
                         buyerTotal,
+
+                    subtotal,
+
+                    deliveryFee:
+                        delivery,
 
                     currency:
                         "KES",
 
+
+                    /*
+                    PAYMENT METHOD
+                    */
+
                     method:
-                        paymentMethod,
+                        normalizedPaymentMethod,
 
                     provider:
-                        paymentMethod === "MPESA"
+                        normalizedPaymentMethod ===
+                        "MPESA"
                             ? "INTASEND"
-                            : paymentMethod,
+                            : normalizedPaymentMethod,
+
+
+                    /*
+                    PAYMENT STATUS
+                    */
 
                     status:
                         "PENDING",
+
+                    resultCode:
+                        null,
+
+                    transactionId:
+                        null,
+
+                    merchantRequestId:
+                        null,
+
+                    checkoutRequestId:
+                        null,
+
+
+                    /*
+                    MONEY FLOW
+
+                    Payment has NOT reached
+                    BIASHNET yet.
+                    */
+
+                    receivedByPlatform:
+                        false,
+
+                    sellerWalletCredited:
+                        false,
+
+                    commissionRecorded:
+                        false,
+
+
+                    /*
+                    TIMESTAMPS
+                    */
 
                     createdAt:
                         now,
@@ -586,37 +1117,77 @@ async function createMarketplaceOrder({
 
         success: true,
 
+
+        /*
+        IDENTIFICATION
+        */
+
         orderId,
 
         paymentId,
+
+        listingId,
 
         buyerId,
 
         sellerId,
 
-        listingId,
+
+        /*
+        PRODUCT
+        */
+
+        productName:
+            listing.title ||
+            listing.name ||
+            "Marketplace Item",
+
+        category,
+
+
+        /*
+        QUANTITY / PRICE
+        */
 
         quantity:
             orderQuantity,
 
+        unitPrice,
+
         subtotal,
+
+
+        /*
+        DELIVERY
+        */
 
         deliveryFee:
             delivery,
 
         buyerTotal,
 
+
+        /*
+        COMMISSION
+        */
+
         commissionRate:
             commission.commissionRate,
 
-        commissionAmount:
-            commission.commissionAmount,
+        commissionPercentage:
+            commission.commissionPercentage,
 
-        sellerGross:
-            commission.sellerGross,
+        commissionAmount,
+
+        sellerGross,
 
         sellerNet:
-            commission.sellerGross,
+            sellerGross,
+
+
+        /*
+        STATUS
+        */
 
         status:
             "PENDING_PAYMENT",
