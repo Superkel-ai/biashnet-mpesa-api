@@ -41,7 +41,7 @@ The payment service should:
 */
 
 router.post(
-    "/payments",
+    "/initiate",
     async (req, res) => {
 
         try {

@@ -759,56 +759,25 @@ async function createMarketplaceOrder({
             */
 
             if (
-                freshListing.stock !==
-                    undefined &&
-                freshListing.stock !==
-                    null
-            ) {
+    freshListing.stock !== undefined &&
+    freshListing.stock !== null
+) {
 
-                const currentStock =
-                    Number(
-                        freshListing.stock
-                    );
+    const currentStock =
+        Number(freshListing.stock);
 
+    if (
+        !Number.isFinite(currentStock) ||
+        currentStock < orderQuantity
+    ) {
 
-                if (
-                    !Number.isFinite(
-                        currentStock
-                    ) ||
-                    currentStock <
-                    orderQuantity
-                ) {
+        throw new Error(
+            `Only ${currentStock} item(s) available.`
+        );
 
-                    throw new Error(
-                        "The requested quantity is no longer available."
-                    );
+    }
 
-                }
-
-
-                /*
-                -----------------------------------------
-                RESERVE STOCK
-                -----------------------------------------
-                */
-
-                transaction.update(
-                    listingRef,
-                    {
-
-                        stock:
-                            currentStock -
-                            orderQuantity,
-
-                        updatedAt:
-                            now,
-
-                    }
-                );
-
-            }
-
-
+}
             /*
             ---------------------------------------------
             PRODUCT IMAGE
