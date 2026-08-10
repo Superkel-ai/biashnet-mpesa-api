@@ -9,7 +9,10 @@ const withdrawRoutes = require("./routes/withdraw");
 const callbackRoutes = require("./routes/callback");
 const adminInvestorRoutes = require("./routes/adminInvestors");
 const adminActualRoutes = require("./routes/adminActual");
-
+const marketplaceOrderRoutes = require("./routes/marketplaceOrders");
+const marketplacePaymentRoutes = require("./routes/marketplacePayments");
+const marketplaceWalletRoutes = require("./routes/marketplaceWallet");
+const marketplaceWithdrawalRoutes = require("./routes/marketplaceWithdrawals");
 const app = express();
 
 
@@ -68,7 +71,26 @@ app.use(
   callbackRoutes
 );
 
+app.use(
+    "/api/marketplace/orders",
+    marketplaceOrderRoutes
+);
 
+
+app.use(
+    "/api/marketplace/payments",
+    marketplacePaymentRoutes
+);
+
+app.use(
+    "/api/marketplace/wallet",
+    marketplaceWalletRoutes
+);
+
+app.use(
+    "/api/marketplace/withdrawals",
+    marketplaceWithdrawalRoutes
+);
 /* =========================
    ADMIN INVESTOR ROUTES
 ========================= */
