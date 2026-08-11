@@ -7,8 +7,8 @@ const { db } = require("../config/firebase");
 
 const {
     createMarketplaceOrder,
+        createCartOrder,
 } = require("../services/orderService");
-
 
 /*
 =========================================================
@@ -194,6 +194,44 @@ productId field inside Firestore.
 
 =========================================================
 */
+router.post(
+    "/cart",
+    authenticateUser,
+    createCartOrder
+);
+
+router.post(
+    "/",
+    authenticateUser,
+    async (req, res) => {
+        // existing single-product order
+    }
+);
+
+router.get(
+    "/buyer/my-orders",
+    authenticateUser,
+    async (req, res) => {
+        // buyer orders
+    }
+);
+
+router.get(
+    "/seller/my-orders",
+    authenticateUser,
+    async (req, res) => {
+        // seller orders
+    }
+);
+
+router.get(
+    "/:orderId",
+    authenticateUser,
+    async (req, res) => {
+        // individual order
+    }
+);
+
 
 router.post(
     "/",

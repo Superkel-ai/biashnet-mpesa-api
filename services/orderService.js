@@ -600,7 +600,984 @@ async function createMarketplaceOrder({
     const now =
         new Date();
 
+/*
+=========================================================
+CREATE CART MARKETPLACE ORDER
+=========================================================
 
+Used by:
+
+POST /api/marketplace/orders/cart
+
+Frontend sends:
+
+{
+    items: [
+        {
+            listingId: "...",
+            quantity: 2,
+            color: "Black",
+            size: "Large"
+        },
+        {
+            listingId: "...",
+            quantity: 1
+        }
+    ],
+
+    deliveryFee: 0,
+
+    paymentMethod: "MPESA",
+
+    buyerPhone: "2547...",
+
+    deliveryLocation: "Gate C",
+
+    deliveryNote: "Call me",
+
+    pickupStation: "JKUAT Gate C"
+}
+
+IMPORTANT:
+
+buyerId is NEVER accepted from frontend.
+
+It comes from Firebase authentication.
+=========================================================
+*/
+
+async function createCartOrder({
+
+    buyerId,
+
+    items = [],
+
+    deliveryFee = 0,
+
+    paymentMethod = "MPESA",
+
+    buyerPhone = "",
+
+    deliveryLocation = "",
+
+    deliveryNote = "",
+
+    pickupStation = "",
+
+}) {
+
+    /*
+    =====================================================
+    VALIDATION
+    =====================================================
+    */
+
+    if (!buyerId) {
+
+        throw new Error(
+            "Buyer ID is required."
+        );
+
+    }
+
+
+    if (
+        !Array.isArray(items) ||
+        items.length === 0
+    ) {
+
+        throw new Error(
+            "Your cart is empty."
+        );
+
+    }
+
+
+    if (items.length > 50) {
+
+        throw new Error(
+            "Too many items in one order."
+        );
+
+    }
+
+
+    const delivery =
+        Number(deliveryFee || 0);
+
+
+    if (
+        !Number.isFinite(delivery) ||
+        delivery < 0
+    ) {
+
+        throw new Error(
+            "Invalid delivery fee."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    PAYMENT METHOD
+    =====================================================
+    */
+
+    const normalizedPaymentMethod =
+        String(
+            paymentMethod || "MPESA"
+        )
+        .trim()
+        .toUpperCase();
+
+
+    const allowedPaymentMethods = [
+        "MPESA",
+        "CARD",
+        "WALLET"
+    ];
+
+
+    if (
+        !allowedPaymentMethods.includes(
+            normalizedPaymentMethod
+        )
+    ) {
+
+        throw new Error(
+            "Unsupported payment method."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    BUYER DETAILS
+    =====================================================
+    */
+
+    const cleanBuyerPhone =
+        String(
+            buyerPhone || ""
+        ).trim();
+
+
+    if (!cleanBuyerPhone) {
+
+        throw new Error(
+            "Buyer phone number is required."
+        );
+
+    }
+
+
+    const cleanDeliveryLocation =
+        String(
+            deliveryLocation || ""
+        ).trim();
+
+
+    if (!cleanDeliveryLocation) {
+
+        throw new Error(
+            "Delivery location is required."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    GENERATE MASTER ORDER
+    =====================================================
+    */
+
+    const orderId =
+        generateOrderId();
+
+
+    const paymentId =
+        generatePaymentId();
+
+
+    const orderRef =
+        db
+            .collection(ORDERS_COLLECTION)
+            .doc(orderId);
+
+
+    const paymentRef =
+        db
+            .collection(PAYMENTS_COLLECTION)
+            .doc(paymentId);
+
+
+    const now =
+        new Date();
+
+
+    /*
+    =====================================================
+    LOAD ALL PRODUCTS
+    =====================================================
+    */
+
+    const preparedItems = [];
+
+    let subtotal = 0;
+
+    let totalCommission = 0;
+
+    let totalSellerGross = 0;
+
+
+    for (
+        const cartItem of items
+    ) {
+
+        const listingId =
+            String(
+                cartItem.listingId ||
+                cartItem.productId ||
+                ""
+            ).trim();
+
+
+        if (!listingId) {
+
+            throw new Error(
+                "A cart item is missing its listing ID."
+            );
+
+        }
+
+
+        const quantity =
+            Number(
+                cartItem.quantity || 1
+            );
+
+
+        if (
+            !Number.isInteger(quantity) ||
+            quantity <= 0
+        ) {
+
+            throw new Error(
+                `Invalid quantity for product ${listingId}.`
+            );
+
+        }
+
+
+        /*
+        ---------------------------------------------
+        LOAD PRODUCT
+        ---------------------------------------------
+        */
+
+        const listingRef =
+            db
+                .collection(
+                    PRODUCTS_COLLECTION
+                )
+                .doc(listingId);
+
+
+        const listingSnap =
+            await listingRef.get();
+
+
+        if (!listingSnap.exists) {
+
+            throw new Error(
+                `Product ${listingId} was not found.`
+            );
+
+        }
+
+
+        const listing =
+            listingSnap.data();
+
+
+        /*
+        ---------------------------------------------
+        STATUS
+        ---------------------------------------------
+        */
+
+        if (
+            listing.isActive === false
+        ) {
+
+            throw new Error(
+                `${listing.title || "Product"} is no longer active.`
+            );
+
+        }
+
+
+        if (
+            listing.status &&
+            listing.status !== "approved"
+        ) {
+
+            throw new Error(
+                `${listing.title || "Product"} is not available.`
+            );
+
+        }
+
+
+        /*
+        ---------------------------------------------
+        SELLER
+        ---------------------------------------------
+        */
+
+        const sellerId =
+            listing.userId;
+
+
+        if (!sellerId) {
+
+            throw new Error(
+                `${listing.title || "Product"} has no seller.`
+            );
+
+        }
+
+
+        if (
+            sellerId === buyerId
+        ) {
+
+            throw new Error(
+                `You cannot purchase your own product: ${listing.title || listingId}.`
+            );
+
+        }
+
+
+        /*
+        ---------------------------------------------
+        PRICE
+        ---------------------------------------------
+        */
+
+        const unitPrice =
+            Number(
+                listing.price
+            );
+
+
+        if (
+            !Number.isFinite(unitPrice) ||
+            unitPrice <= 0
+        ) {
+
+            throw new Error(
+                `Invalid price for ${listing.title || listingId}.`
+            );
+
+        }
+
+
+        /*
+        ---------------------------------------------
+        STOCK
+        ---------------------------------------------
+        */
+
+        if (
+            listing.stock !== undefined &&
+            listing.stock !== null
+        ) {
+
+            const stock =
+                Number(
+                    listing.stock
+                );
+
+
+            if (
+                !Number.isFinite(stock) ||
+                stock < quantity
+            ) {
+
+                throw new Error(
+                    `Only ${stock} item(s) available for ${listing.title || listingId}.`
+                );
+
+            }
+
+        }
+
+
+        /*
+        ---------------------------------------------
+        PRODUCT TOTAL
+        ---------------------------------------------
+        */
+
+        const itemSubtotal =
+            money(
+                unitPrice * quantity
+            );
+
+
+        /*
+        ---------------------------------------------
+        COMMISSION
+        ---------------------------------------------
+        */
+
+        const commission =
+            await calculateCommission({
+
+                amount:
+                    itemSubtotal,
+
+                category:
+                    String(
+                        listing.category ||
+                        listing.categoryName ||
+                        "general"
+                    ).trim(),
+
+            });
+
+
+        const commissionAmount =
+            money(
+                commission.commissionAmount
+            );
+
+
+        const sellerGross =
+            money(
+                commission.sellerGross
+            );
+
+
+        /*
+        ---------------------------------------------
+        PRODUCT SNAPSHOT
+        ---------------------------------------------
+        */
+
+        const productImage =
+            listing.images?.[0]?.thumb ||
+            listing.images?.[0]?.full ||
+            listing.image ||
+            listing.imageUrl ||
+            null;
+
+
+        const productName =
+            listing.title ||
+            listing.name ||
+            "Marketplace Item";
+
+
+        preparedItems.push({
+
+            listingId,
+
+            sellerId,
+
+            productName,
+
+            productImage,
+
+            category:
+                listing.category ||
+                listing.categoryName ||
+                "general",
+
+            quantity,
+
+            unitPrice,
+
+            subtotal:
+                itemSubtotal,
+
+            commissionRate:
+                commission.commissionRate,
+
+            commissionPercentage:
+                commission.commissionPercentage,
+
+            commissionAmount,
+
+            sellerGross,
+
+            sellerNet:
+                sellerGross,
+
+            /*
+            Preserve buyer selections
+            */
+
+            color:
+                cartItem.color ||
+                null,
+
+            size:
+                cartItem.size ||
+                null,
+
+            variant:
+                cartItem.variant ||
+                null,
+
+        });
+
+
+        subtotal =
+            money(
+                subtotal +
+                itemSubtotal
+            );
+
+
+        totalCommission =
+            money(
+                totalCommission +
+                commissionAmount
+            );
+
+
+        totalSellerGross =
+            money(
+                totalSellerGross +
+                sellerGross
+            );
+
+    }
+
+
+    /*
+    =====================================================
+    BUYER TOTAL
+    =====================================================
+    */
+
+    const buyerTotal =
+        money(
+            subtotal +
+            delivery
+        );
+
+
+    /*
+    =====================================================
+    FINANCIAL CHECK
+    =====================================================
+    */
+
+    const financialTotal =
+        money(
+            totalCommission +
+            totalSellerGross
+        );
+
+
+    if (
+        Math.abs(
+            financialTotal -
+            subtotal
+        ) > 0.01
+    ) {
+
+        throw new Error(
+            "Cart commission calculation is financially inconsistent."
+        );
+
+    }
+
+
+    /*
+    =====================================================
+    ATOMIC STOCK + ORDER CREATION
+    =====================================================
+    */
+
+    await db.runTransaction(
+        async (transaction) => {
+
+            /*
+            ---------------------------------------------
+            RECHECK EVERY PRODUCT
+            ---------------------------------------------
+            */
+
+            for (
+                const item of preparedItems
+            ) {
+
+                const listingRef =
+                    db
+                        .collection(
+                            PRODUCTS_COLLECTION
+                        )
+                        .doc(
+                            item.listingId
+                        );
+
+
+                const snap =
+                    await transaction.get(
+                        listingRef
+                    );
+
+
+                if (!snap.exists) {
+
+                    throw new Error(
+                        `${item.productName} is no longer available.`
+                    );
+
+                }
+
+
+                const listing =
+                    snap.data();
+
+
+                /*
+                RECHECK PRICE
+                */
+
+                const freshPrice =
+                    Number(
+                        listing.price
+                    );
+
+
+                if (
+                    freshPrice !==
+                    item.unitPrice
+                ) {
+
+                    throw new Error(
+                        `The price of ${item.productName} has changed.`
+                    );
+
+                }
+
+
+                /*
+                RECHECK STOCK
+                */
+
+                if (
+                    listing.stock !== undefined &&
+                    listing.stock !== null
+                ) {
+
+                    const stock =
+                        Number(
+                            listing.stock
+                        );
+
+
+                    if (
+                        !Number.isFinite(stock) ||
+                        stock < item.quantity
+                    ) {
+
+                        throw new Error(
+                            `Only ${stock} item(s) available for ${item.productName}.`
+                        );
+
+                    }
+
+
+                    /*
+                    RESERVE STOCK
+                    */
+
+                    transaction.update(
+                        listingRef,
+                        {
+
+                            stock:
+                                stock -
+                                item.quantity,
+
+                            updatedAt:
+                                now,
+
+                        }
+                    );
+
+                }
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            CREATE MASTER ORDER
+            ---------------------------------------------
+            */
+
+            transaction.set(
+                orderRef,
+                {
+
+                    orderId,
+
+                    buyerId,
+
+                    /*
+                    CART ORDER
+                    */
+
+                    orderType:
+                        "CART",
+
+                    items:
+                        preparedItems,
+
+                    itemCount:
+                        preparedItems.length,
+
+                    /*
+                    FINANCIALS
+                    */
+
+                    subtotal,
+
+                    deliveryFee:
+                        delivery,
+
+                    buyerTotal,
+
+                    commissionAmount:
+                        totalCommission,
+
+                    sellerGross:
+                        totalSellerGross,
+
+                    /*
+                    DELIVERY
+                    */
+
+                    buyerPhone:
+                        cleanBuyerPhone,
+
+                    deliveryLocation:
+                        cleanDeliveryLocation,
+
+                    deliveryNote:
+                        String(
+                            deliveryNote ||
+                            ""
+                        ).trim(),
+
+                    pickupStation:
+                        String(
+                            pickupStation ||
+                            ""
+                        ).trim(),
+
+                    /*
+                    PAYMENT
+                    */
+
+                    paymentId,
+
+                    paymentMethod:
+                        normalizedPaymentMethod,
+
+                    paymentStatus:
+                        "PENDING",
+
+                    status:
+                        "PENDING_PAYMENT",
+
+                    /*
+                    MONEY FLOW
+                    */
+
+                    fundsReceived:
+                        false,
+
+                    fundsHeld:
+                        false,
+
+                    sellerWalletCredited:
+                        false,
+
+                    sellerPaymentStatus:
+                        "NOT_RELEASED",
+
+                    payoutStatus:
+                        "NOT_RELEASED",
+
+                    /*
+                    DELIVERY
+                    */
+
+                    deliveryStatus:
+                        "NOT_STARTED",
+
+                    completionCodeStatus:
+                        "NOT_GENERATED",
+
+                    refundStatus:
+                        "NOT_REFUNDED",
+
+                    /*
+                    TIMESTAMPS
+                    */
+
+                    createdAt:
+                        now,
+
+                    updatedAt:
+                        now,
+
+                }
+            );
+
+
+            /*
+            ---------------------------------------------
+            CREATE PAYMENT
+            ---------------------------------------------
+            */
+
+            transaction.set(
+                paymentRef,
+                {
+
+                    paymentId,
+
+                    orderId,
+
+                    buyerId,
+
+                    /*
+                    CART
+                    */
+
+                    orderType:
+                        "CART",
+
+                    itemCount:
+                        preparedItems.length,
+
+                    /*
+                    AMOUNT
+                    */
+
+                    amount:
+                        buyerTotal,
+
+                    subtotal,
+
+                    deliveryFee:
+                        delivery,
+
+                    currency:
+                        "KES",
+
+                    /*
+                    METHOD
+                    */
+
+                    method:
+                        normalizedPaymentMethod,
+
+                    provider:
+                        normalizedPaymentMethod ===
+                        "MPESA"
+                            ? "INTASEND"
+                            : normalizedPaymentMethod,
+
+                    /*
+                    STATUS
+                    */
+
+                    status:
+                        "PENDING",
+
+                    resultCode:
+                        null,
+
+                    transactionId:
+                        null,
+
+                    merchantRequestId:
+                        null,
+
+                    checkoutRequestId:
+                        null,
+
+                    createdAt:
+                        now,
+
+                    updatedAt:
+                        now,
+
+                }
+            );
+
+        }
+    );
+
+
+    /*
+    =====================================================
+    RETURN TO ROUTE
+    =====================================================
+    */
+
+    return {
+
+        success: true,
+
+        orderId,
+
+        paymentId,
+
+        orderType:
+            "CART",
+
+        subtotal,
+
+        deliveryFee:
+            delivery,
+
+        buyerTotal,
+
+        commissionAmount:
+            totalCommission,
+
+        sellerGross:
+            totalSellerGross,
+
+        itemCount:
+            preparedItems.length,
+
+        items:
+            preparedItems,
+
+        status:
+            "PENDING_PAYMENT",
+
+        paymentStatus:
+            "PENDING",
+
+    };
+
+}
     /*
     =====================================================
     ATOMIC ORDER CREATION
@@ -1172,5 +2149,5 @@ async function createMarketplaceOrder({
 module.exports = {
 
     createMarketplaceOrder,
-
+    createCartOrder,
 };
