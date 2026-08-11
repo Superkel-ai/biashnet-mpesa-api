@@ -1,36 +1,29 @@
-const {
-    db
-} = require("../config/firebase");
-
-const {
-    stkPush
-} = require("./mpesa");
-
+const { db } = require("../config/firebase");
+const { stkPush } = require("./mpesa");
 
 /*
 =========================================================
 MARKETPLACE PAYMENT SERVICE
 =========================================================
 
-LOW LEVEL M-PESA:
-services/mpesa.js
-
-THIS SERVICE:
-- validates marketplace order
-- validates buyer
-- gets authoritative amount
-- initiates STK Push
-- records payment attempt
-- processes successful callback
-- reduces stock
-- creates marketplace transaction
-
 Collections:
 
 marketplaceOrders
 marketplacePayments
 marketplaceTransactions
-products
+
+Products:
+
+products/{listingId}
+
+IMPORTANT:
+
+- buyerId comes from Firebase Authentication.
+- sellerId comes from the order/product.
+- Amount comes ONLY from marketplaceOrders.
+- Frontend amount is NEVER trusted.
+- STK Push uses the existing services/mpesa.js.
+- Stock is reduced ONLY after successful payment callback.
 =========================================================
 */
 
@@ -43,94 +36,69 @@ HELPERS
 
 function normalizePhone(phone) {
 
-    if (!phone) {
-        return "";
-    }
+  if (!phone) {
+    return "";
+  }
 
-    let value = String(phone)
-        .trim()
-        .replace(/\s+/g, "");
+  let value = String(phone)
+    .trim()
+    .replace(/\s+/g, "")
+    .replace(/-/g, "");
 
+  // +254712345678 -> 254712345678
+  if (value.startsWith("+254")) {
+    value = value.substring(1);
+  }
 
-    /*
-    0712345678
-    ->
-    254712345678
-    */
+  // 0712345678 -> 254712345678
+  if (
+    value.startsWith("0") &&
+    value.length === 10
+  ) {
+    value =
+      "254" +
+      value.substring(1);
+  }
 
-    if (
-        value.startsWith("0") &&
-        value.length === 10
-    ) {
-
-        value =
-            "254" +
-            value.substring(1);
-
-    }
-
-
-    /*
-    +254712345678
-    ->
-    254712345678
-    */
-
-    if (
-        value.startsWith("+254")
-    ) {
-
-        value =
-            value.substring(1);
-
-    }
-
-
-    return value;
+  return value;
 }
-
 
 
 function normalizePaymentMethod(method) {
 
-    const value =
-        String(method || "MPESA")
-            .trim()
-            .toUpperCase()
-            .replace("-", "");
+  const value = String(
+    method || "MPESA"
+  )
+    .trim()
+    .toUpperCase()
+    .replace("-", "");
 
-
-    return value;
+  return value;
 }
-
 
 
 function generatePaymentId() {
 
-    return (
-        `PAY-${Date.now()}-` +
-        Math.random()
-            .toString(36)
-            .substring(2, 8)
-            .toUpperCase()
-    );
-
+  return (
+    `PAY-${Date.now()}-` +
+    Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase()
+  );
 }
 
 
+function generateTransactionId() {
 
-function generateMarketplaceTransactionId() {
-
-    return (
-        `SALE-${Date.now()}-` +
-        Math.random()
-            .toString(36)
-            .substring(2, 8)
-            .toUpperCase()
-    );
-
+  return (
+    `SALE-${Date.now()}-` +
+    Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase()
+  );
 }
-
 
 
 /*
@@ -138,550 +106,309 @@ function generateMarketplaceTransactionId() {
 INITIATE MARKETPLACE PAYMENT
 =========================================================
 
-Called by:
+POST:
 
-POST /api/marketplace/payments/initiate
+/api/marketplace/payments/initiate
 
-IMPORTANT:
+This function:
 
-The frontend DOES NOT provide amount.
-
-Amount comes from:
-
-marketplaceOrders/{orderId}.buyerTotal
-
+1. Gets order
+2. Verifies buyer
+3. Gets authoritative amount
+4. Normalizes phone
+5. Calls YOUR existing mpesa.js
+6. Saves CheckoutRequestID
+7. Updates order
 =========================================================
 */
 
 async function initiateMarketplacePayment({
 
-    orderId,
+  orderId,
 
-    buyerId,
+  buyerId,
 
-    phoneNumber,
+  phoneNumber,
 
-    paymentMethod = "MPESA",
+  paymentMethod = "MPESA",
 
 }) {
 
-    /*
-    =====================================================
-    VALIDATION
-    =====================================================
-    */
+  console.log(
+    "=========================================="
+  );
 
-    if (!orderId) {
+  console.log(
+    "🟡 MARKETPLACE PAYMENT START"
+  );
 
-        throw new Error(
-            "Order ID is required."
-        );
+  console.log(
+    "Order:",
+    orderId
+  );
 
-    }
+  console.log(
+    "Buyer:",
+    buyerId
+  );
 
+  console.log(
+    "Phone:",
+    phoneNumber
+  );
 
-    if (!buyerId) {
+  console.log(
+    "=========================================="
+  );
 
-        throw new Error(
-            "Buyer ID is required."
-        );
 
-    }
+  /*
+  ========================================================
+  VALIDATION
+  ========================================================
+  */
 
+  if (!orderId) {
 
-    const normalizedMethod =
-        normalizePaymentMethod(
-            paymentMethod
-        );
+    throw new Error(
+      "Order ID is required."
+    );
 
+  }
 
-    if (
-        normalizedMethod !== "MPESA"
-    ) {
 
-        throw new Error(
-            "Currently only M-PESA payments are supported."
-        );
+  if (!buyerId) {
 
-    }
+    throw new Error(
+      "Buyer ID is required."
+    );
 
+  }
 
-    /*
-    =====================================================
-    GET ORDER
-    =====================================================
-    */
 
-    const orderRef =
-        db
-            .collection("marketplaceOrders")
-            .doc(orderId);
-
-
-    const orderSnap =
-        await orderRef.get();
-
-
-    if (!orderSnap.exists) {
-
-        throw new Error(
-            "Marketplace order not found."
-        );
-
-    }
-
-
-    const order =
-        orderSnap.data();
-
-
-    /*
-    =====================================================
-    VERIFY BUYER
-    =====================================================
-    */
-
-    if (
-        order.buyerId !== buyerId
-    ) {
-
-        throw new Error(
-            "You are not authorized to pay for this order."
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    CHECK PAYMENT STATUS
-    =====================================================
-    */
-
-    if (
-        order.paymentStatus === "COMPLETED" ||
-        order.paymentStatus === "PAID"
-    ) {
-
-        throw new Error(
-            "This order has already been paid."
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    CHECK ORDER STATUS
-    =====================================================
-    */
-
-    if (
-        order.status !== "PENDING_PAYMENT" &&
-        order.status !== "PAYMENT_INITIATED"
-    ) {
-
-        throw new Error(
-            `This order cannot be paid. Current status: ${order.status}.`
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    AUTHORITATIVE AMOUNT
-    =====================================================
-
-    NEVER trust frontend amount.
-    */
-
-    const amount =
-        Number(
-            order.buyerTotal
-        );
-
-
-    if (
-        !Number.isFinite(amount) ||
-        amount <= 0
-    ) {
-
-        throw new Error(
-            "Invalid marketplace order amount."
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    PHONE
-    =====================================================
-    */
-
-    const phone =
-        normalizePhone(
-            phoneNumber ||
-            order.buyerPhone
-        );
-
-
-    if (!phone) {
-
-        throw new Error(
-            "M-PESA phone number is required."
-        );
-
-    }
-
-
-    if (
-        !/^2547\d{8}$/.test(phone)
-    ) {
-
-        throw new Error(
-            "Invalid Kenyan M-PESA phone number."
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    PAYMENT ID
-    =====================================================
-    */
-
-    const paymentId =
-        order.paymentId ||
-        generatePaymentId();
-
-
-    const paymentRef =
-        db
-            .collection(
-                "marketplacePayments"
-            )
-            .doc(paymentId);
-
-
-    /*
-    =====================================================
-    CHECK EXISTING PAYMENT
-    =====================================================
-    */
-
-    const existingPaymentSnap =
-        await paymentRef.get();
-
-
-    if (
-        existingPaymentSnap.exists
-    ) {
-
-        const existingPayment =
-            existingPaymentSnap.data();
-
-
-        /*
-        If previous STK request is still pending,
-        don't send another STK.
-        */
-
-        if (
-            existingPayment.status === "PENDING" ||
-            existingPayment.status === "PROCESSING"
-        ) {
-
-            return {
-
-                success: true,
-
-                alreadyInitiated: true,
-
-                paymentId,
-
-                orderId,
-
-                amount,
-
-                currency: "KES",
-
-                phone,
-
-                paymentMethod: "MPESA",
-
-                status:
-                    existingPayment.status,
-
-                checkoutRequestID:
-                    existingPayment.checkoutRequestID ||
-                    null,
-
-                merchantRequestID:
-                    existingPayment.merchantRequestID ||
-                    null,
-
-                message:
-                    "An M-PESA payment request is already pending."
-
-            };
-
-        }
-
-    }
-
-
-    /*
-    =====================================================
-    INITIATE M-PESA STK PUSH
-    =====================================================
-    */
-
-    let mpesaResponse;
-
-
-    try {
-
-        mpesaResponse =
-            await stkPush(
-                phone,
-                amount,
-                `ORDER-${orderId.slice(0, 8)}`
-            );
-
-
-    } catch (error) {
-
-        console.error(
-            "❌ Marketplace M-PESA STK error:",
-            error.response?.data ||
-            error.message ||
-            error
-        );
-
-
-        throw new Error(
-            error.response?.data?.errorMessage ||
-            error.response?.data?.errorCode ||
-            error.message ||
-            "Failed to initiate M-PESA STK Push."
-        );
-
-    }
-
-
-    console.log(
-        "✅ Marketplace M-PESA response:",
-        JSON.stringify(
-            mpesaResponse,
-            null,
-            2
-        )
+  const normalizedMethod =
+    normalizePaymentMethod(
+      paymentMethod
     );
 
 
-    /*
-    =====================================================
-    VERIFY SAFARICOM RESPONSE
-    =====================================================
-    */
+  if (
+    normalizedMethod !== "MPESA"
+  ) {
 
-    if (
-        String(
-            mpesaResponse?.ResponseCode
-        ) !== "0"
-    ) {
+    throw new Error(
+      "Currently only M-PESA payments are supported."
+    );
 
-        throw new Error(
-            mpesaResponse?.ResponseDescription ||
-            "M-PESA STK Push was rejected."
-        );
-
-    }
+  }
 
 
-    /*
-    =====================================================
-    GET M-PESA IDS
-    =====================================================
-    */
+  /*
+  ========================================================
+  GET ORDER
+  ========================================================
+  */
 
-    const checkoutRequestID =
-        mpesaResponse.CheckoutRequestID;
-
-
-    const merchantRequestID =
-        mpesaResponse.MerchantRequestID;
+  const orderRef =
+    db
+      .collection("marketplaceOrders")
+      .doc(orderId);
 
 
-    if (!checkoutRequestID) {
-
-        throw new Error(
-            "M-PESA did not return CheckoutRequestID."
-        );
-
-    }
+  const orderSnap =
+    await orderRef.get();
 
 
-    const now =
-        new Date();
+  if (!orderSnap.exists) {
+
+    throw new Error(
+      "Marketplace order not found."
+    );
+
+  }
 
 
-    /*
-    =====================================================
-    SAVE PAYMENT + UPDATE ORDER
-    =====================================================
-    */
-
-    await db.runTransaction(
-        async (transaction) => {
-
-            const freshOrderSnap =
-                await transaction.get(
-                    orderRef
-                );
+  const order =
+    orderSnap.data();
 
 
-            if (
-                !freshOrderSnap.exists
-            ) {
-
-                throw new Error(
-                    "Marketplace order no longer exists."
-                );
-
-            }
-
-
-            const freshOrder =
-                freshOrderSnap.data();
+  console.log(
+    "📦 Marketplace order:",
+    JSON.stringify(
+      order,
+      null,
+      2
+    )
+  );
 
 
-            if (
-                freshOrder.buyerId !==
-                buyerId
-            ) {
+  /*
+  ========================================================
+  VERIFY BUYER
+  ========================================================
+  */
 
-                throw new Error(
-                    "Order ownership verification failed."
-                );
+  if (
+    order.buyerId !== buyerId
+  ) {
 
-            }
+    throw new Error(
+      "You are not authorized to pay for this order."
+    );
 
-
-            /*
-            ---------------------------------------------
-            PAYMENT RECORD
-            ---------------------------------------------
-            */
-
-            transaction.set(
-                paymentRef,
-                {
-
-                    paymentId,
-
-                    orderId,
-
-                    buyerId,
-
-                    sellerId:
-                        freshOrder.sellerId ||
-                        null,
-
-                    listingId:
-                        freshOrder.listingId ||
-                        null,
-
-                    amount,
-
-                    currency:
-                        "KES",
-
-                    method:
-                        "MPESA",
-
-                    provider:
-                        "MPESA",
-
-                    phone,
-
-                    status:
-                        "PENDING",
-
-                    checkoutRequestID,
-
-                    merchantRequestID,
-
-                    mpesaResponse,
-
-                    createdAt:
-                        now,
-
-                    updatedAt:
-                        now,
-
-                },
-                {
-                    merge: true
-                }
-            );
+  }
 
 
-            /*
-            ---------------------------------------------
-            UPDATE ORDER
-            ---------------------------------------------
-            */
+  /*
+  ========================================================
+  VERIFY ORDER STATUS
+  ========================================================
+  */
 
-            transaction.update(
-                orderRef,
-                {
+  if (
+    order.paymentStatus ===
+    "COMPLETED"
+  ) {
 
-                    paymentId,
+    throw new Error(
+      "This order has already been paid."
+    );
 
-                    paymentMethod:
-                        "MPESA",
+  }
 
-                    buyerPhone:
-                        phone,
 
-                    checkoutRequestID,
+  if (
+    order.status !==
+      "PENDING_PAYMENT" &&
+    order.status !==
+      "PAYMENT_INITIATED"
+  ) {
 
-                    merchantRequestID,
+    throw new Error(
+      `This order cannot be paid. Current status: ${order.status}`
+    );
 
-                    status:
-                        "PAYMENT_INITIATED",
+  }
 
-                    paymentStatus:
-                        "PENDING",
 
-                    paymentInitiatedAt:
-                        now,
+  /*
+  ========================================================
+  AUTHORITATIVE AMOUNT
+  ========================================================
+  */
 
-                    updatedAt:
-                        now,
-
-                }
-            );
-
-        }
+  const amount =
+    Number(
+      order.buyerTotal
     );
 
 
-    /*
-    =====================================================
-    RETURN TO FRONTEND
-    =====================================================
-    */
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0
+  ) {
 
-    return {
+    throw new Error(
+      "Invalid marketplace order amount."
+    );
+
+  }
+
+
+  /*
+  ========================================================
+  PHONE
+  ========================================================
+  */
+
+  const phone =
+    normalizePhone(
+      phoneNumber ||
+      order.buyerPhone
+    );
+
+
+  console.log(
+    "📱 Normalized M-Pesa phone:",
+    phone
+  );
+
+
+  if (!phone) {
+
+    throw new Error(
+      "M-Pesa phone number is required."
+    );
+
+  }
+
+
+  if (
+    !/^2547\d{8}$/.test(phone)
+  ) {
+
+    throw new Error(
+      "Invalid Kenyan M-Pesa phone number. Use 2547XXXXXXXX."
+    );
+
+  }
+
+
+  /*
+  ========================================================
+  PAYMENT ID
+  ========================================================
+  */
+
+  const paymentId =
+    order.paymentId ||
+    generatePaymentId();
+
+
+  const paymentRef =
+    db
+      .collection(
+        "marketplacePayments"
+      )
+      .doc(paymentId);
+
+
+  /*
+  ========================================================
+  CHECK EXISTING PAYMENT
+  ========================================================
+  */
+
+  const existingPaymentSnap =
+    await paymentRef.get();
+
+
+  if (
+    existingPaymentSnap.exists
+  ) {
+
+    const existingPayment =
+      existingPaymentSnap.data();
+
+
+    if (
+      existingPayment.status ===
+        "PENDING" ||
+      existingPayment.status ===
+        "PROCESSING"
+    ) {
+
+      console.log(
+        "⚠️ Existing pending payment found:",
+        paymentId
+      );
+
+
+      return {
 
         success: true,
 
-        alreadyInitiated: false,
+        alreadyInitiated: true,
 
         paymentId,
 
@@ -689,32 +416,372 @@ async function initiateMarketplacePayment({
 
         amount,
 
-        currency:
-            "KES",
+        currency: "KES",
 
         phone,
 
-        paymentMethod:
-            "MPESA",
-
-        provider:
-            "MPESA",
+        paymentMethod: "MPESA",
 
         status:
+          existingPayment.status,
+
+        checkoutRequestID:
+          existingPayment.checkoutRequestID ||
+          null,
+
+        merchantRequestID:
+          existingPayment.merchantRequestID ||
+          null,
+
+      };
+
+    }
+
+  }
+
+
+  /*
+  ========================================================
+  M-PESA STK PUSH
+  ========================================================
+
+  THIS IS THE IMPORTANT PART.
+
+  It uses exactly the same:
+
+      services/mpesa.js
+
+  used by your working investor Deposit dialog.
+  ========================================================
+  */
+
+  let mpesaResponse;
+
+
+  try {
+
+    console.log(
+      "📲 Sending marketplace M-Pesa STK..."
+    );
+
+    console.log(
+      "Amount:",
+      amount
+    );
+
+    console.log(
+      "Phone:",
+      phone
+    );
+
+
+    mpesaResponse =
+      await stkPush(
+        phone,
+        amount,
+        `ORDER-${orderId.slice(0, 8)}`
+      );
+
+
+  } catch (error) {
+
+    console.error(
+      "❌ MARKETPLACE STK PUSH ERROR:"
+    );
+
+    console.error(
+      error.response?.data ||
+      error.message ||
+      error
+    );
+
+
+    throw new Error(
+      error.response?.data?.errorMessage ||
+      error.response?.data?.errorDescription ||
+      error.message ||
+      "Failed to initiate M-Pesa STK Push."
+    );
+
+  }
+
+
+  /*
+  ========================================================
+  LOG SAFARICOM RESPONSE
+  ========================================================
+  */
+
+  console.log(
+    "✅ MARKETPLACE M-PESA RESPONSE:"
+  );
+
+  console.log(
+    JSON.stringify(
+      mpesaResponse,
+      null,
+      2
+    )
+  );
+
+
+  /*
+  ========================================================
+  VERIFY SAFARICOM RESPONSE
+  ========================================================
+  */
+
+  if (
+    String(
+      mpesaResponse?.ResponseCode
+    ) !== "0"
+  ) {
+
+    console.error(
+      "❌ Safaricom rejected STK request:"
+    );
+
+    console.error(
+      mpesaResponse
+    );
+
+
+    throw new Error(
+      mpesaResponse?.ResponseDescription ||
+      mpesaResponse?.CustomerMessage ||
+      "M-Pesa STK Push was rejected."
+    );
+
+  }
+
+
+  /*
+  ========================================================
+  EXTRACT SAFARICOM IDS
+  ========================================================
+  */
+
+  const checkoutRequestID =
+    mpesaResponse
+      ?.CheckoutRequestID ||
+    null;
+
+
+  const merchantRequestID =
+    mpesaResponse
+      ?.MerchantRequestID ||
+    null;
+
+
+  if (!checkoutRequestID) {
+
+    throw new Error(
+      "M-Pesa did not return a CheckoutRequestID."
+    );
+
+  }
+
+
+  const now =
+    new Date();
+
+
+  /*
+  ========================================================
+  SAVE PAYMENT + UPDATE ORDER
+  ========================================================
+  */
+
+  await db.runTransaction(
+    async (transaction) => {
+
+      const freshOrderSnap =
+        await transaction.get(
+          orderRef
+        );
+
+
+      if (
+        !freshOrderSnap.exists
+      ) {
+
+        throw new Error(
+          "Marketplace order no longer exists."
+        );
+
+      }
+
+
+      const freshOrder =
+        freshOrderSnap.data();
+
+
+      if (
+        freshOrder.buyerId !==
+        buyerId
+      ) {
+
+        throw new Error(
+          "Order ownership verification failed."
+        );
+
+      }
+
+
+      /*
+      -----------------------------------------------
+      PAYMENT RECORD
+      -----------------------------------------------
+      */
+
+      transaction.set(
+        paymentRef,
+        {
+
+          paymentId,
+
+          orderId,
+
+          buyerId,
+
+          sellerId:
+            freshOrder.sellerId ||
+            null,
+
+          listingId:
+            freshOrder.listingId ||
+            null,
+
+          amount,
+
+          currency:
+            "KES",
+
+          method:
+            "MPESA",
+
+          provider:
+            "MPESA",
+
+          phone,
+
+          status:
             "PENDING",
 
-        checkoutRequestID,
+          checkoutRequestID,
 
-        merchantRequestID,
+          merchantRequestID,
 
-        message:
-            mpesaResponse.CustomerMessage ||
-            "M-PESA payment request sent. Check your phone.",
+          providerResponse:
+            mpesaResponse,
 
-    };
+          createdAt:
+            now,
+
+          updatedAt:
+            now,
+
+        },
+        {
+          merge: true
+        }
+      );
+
+
+      /*
+      -----------------------------------------------
+      UPDATE ORDER
+      -----------------------------------------------
+      */
+
+      transaction.update(
+        orderRef,
+        {
+
+          paymentId,
+
+          paymentMethod:
+            "MPESA",
+
+          buyerPhone:
+            phone,
+
+          status:
+            "PAYMENT_INITIATED",
+
+          paymentStatus:
+            "PENDING",
+
+          checkoutRequestID,
+
+          merchantRequestID,
+
+          paymentInitiatedAt:
+            now,
+
+          updatedAt:
+            now,
+
+        }
+      );
+
+    }
+  );
+
+
+  /*
+  ========================================================
+  SUCCESS
+  ========================================================
+  */
+
+  console.log(
+    "🟢 MARKETPLACE STK SUCCESS"
+  );
+
+  console.log(
+    "CheckoutRequestID:",
+    checkoutRequestID
+  );
+
+
+  return {
+
+    success: true,
+
+    alreadyInitiated: false,
+
+    paymentId,
+
+    orderId,
+
+    amount,
+
+    currency:
+      "KES",
+
+    phone,
+
+    paymentMethod:
+      "MPESA",
+
+    provider:
+      "MPESA",
+
+    status:
+      "PENDING",
+
+    checkoutRequestID,
+
+    merchantRequestID,
+
+    message:
+      mpesaResponse.CustomerMessage ||
+      "M-Pesa payment request sent. Check your phone and enter your M-Pesa PIN.",
+
+  };
 
 }
-
 
 
 /*
@@ -722,678 +789,555 @@ async function initiateMarketplacePayment({
 PROCESS SUCCESSFUL MARKETPLACE PAYMENT
 =========================================================
 
-THIS IS CALLED BY YOUR M-PESA CALLBACK.
+Called by your M-Pesa callback.
 
-Do NOT call this from the frontend.
+IMPORTANT:
 
-Flow:
-
-Safaricom
-    ↓
-CALLBACK_URL
-    ↓
-callback route
-    ↓
-processMarketplacePayment()
-    ↓
-verify amount
-    ↓
-reduce stock
-    ↓
-mark order paid
-    ↓
-create payment record
-    ↓
-create marketplace transaction
-
+Stock is reduced ONLY after Safaricom confirms
+successful payment.
 =========================================================
 */
 
 async function processMarketplacePayment({
 
-    orderId,
+  orderId,
 
-    checkoutRequestID,
+  providerTransactionId,
 
-    providerTransactionId,
+  amount,
 
-    amount,
+  paymentMethod = "MPESA",
 
-    receiptNumber,
-
-    phoneNumber,
-
-    providerResponse = null,
+  providerResponse = null,
 
 }) {
 
-    /*
-    =====================================================
-    VALIDATION
-    =====================================================
-    */
+  if (!orderId) {
 
-    if (!orderId) {
+    throw new Error(
+      "Order ID is required."
+    );
 
-        throw new Error(
-            "Order ID is required."
-        );
+  }
 
-    }
 
+  if (!providerTransactionId) {
 
-    if (!providerTransactionId) {
+    throw new Error(
+      "M-Pesa transaction ID is required."
+    );
 
-        throw new Error(
-            "M-PESA transaction ID is required."
-        );
+  }
 
-    }
 
+  const paidAmount =
+    Number(amount);
 
-    const paidAmount =
-        Number(amount);
 
+  if (
+    !Number.isFinite(paidAmount) ||
+    paidAmount <= 0
+  ) {
 
-    if (
-        !Number.isFinite(paidAmount) ||
-        paidAmount <= 0
-    ) {
+    throw new Error(
+      "Invalid payment amount."
+    );
 
-        throw new Error(
-            "Invalid payment amount."
-        );
+  }
 
-    }
 
+  /*
+  ========================================================
+  GET ORDER
+  ========================================================
+  */
 
-    /*
-    =====================================================
-    GET ORDER
-    =====================================================
-    */
+  const orderRef =
+    db
+      .collection(
+        "marketplaceOrders"
+      )
+      .doc(orderId);
 
-    const orderRef =
-        db
-            .collection(
-                "marketplaceOrders"
-            )
-            .doc(orderId);
 
+  const orderSnap =
+    await orderRef.get();
 
-    const orderSnap =
-        await orderRef.get();
 
+  if (!orderSnap.exists) {
 
-    if (!orderSnap.exists) {
+    throw new Error(
+      "Marketplace order not found."
+    );
 
-        throw new Error(
-            "Marketplace order not found."
-        );
+  }
 
-    }
 
+  const order =
+    orderSnap.data();
 
-    const order =
-        orderSnap.data();
 
+  /*
+  ========================================================
+  VERIFY AMOUNT
+  ========================================================
+  */
 
-    /*
-    =====================================================
-    VERIFY AMOUNT
-    =====================================================
-    */
-
-    const expectedAmount =
-        Number(
-            order.buyerTotal
-        );
-
-
-    if (
-        !Number.isFinite(expectedAmount) ||
-        expectedAmount <= 0
-    ) {
-
-        throw new Error(
-            "Invalid order amount."
-        );
-
-    }
-
-
-    if (
-        Math.abs(
-            paidAmount -
-            expectedAmount
-        ) > 0.01
-    ) {
-
-        throw new Error(
-            `Payment amount mismatch. Expected KES ${expectedAmount}, received KES ${paidAmount}.`
-        );
-
-    }
-
-
-    /*
-    =====================================================
-    IDEMPOTENCY
-    =====================================================
-    */
-
-    const existingTransactionSnap =
-        await db
-            .collection(
-                "marketplaceTransactions"
-            )
-            .where(
-                "providerTransactionId",
-                "==",
-                providerTransactionId
-            )
-            .limit(1)
-            .get();
-
-
-    if (
-        !existingTransactionSnap.empty
-    ) {
-
-        const existing =
-            existingTransactionSnap
-                .docs[0]
-                .data();
-
-
-        return {
-
-            success: true,
-
-            alreadyProcessed: true,
-
-            orderId,
-
-            paymentId:
-                existing.paymentId,
-
-            transactionId:
-                existing.transactionId,
-
-            providerTransactionId,
-
-            status:
-                "PAID",
-
-        };
-
-    }
-
-
-    /*
-    =====================================================
-    PAYMENT ID
-    =====================================================
-    */
-
-    const paymentId =
-        order.paymentId ||
-        generatePaymentId();
-
-
-    const paymentRef =
-        db
-            .collection(
-                "marketplacePayments"
-            )
-            .doc(paymentId);
-
-
-    /*
-    =====================================================
-    MARKETPLACE TRANSACTION
-    =====================================================
-    */
-
-    const transactionId =
-        generateMarketplaceTransactionId();
-
-
-    const transactionRef =
-        db
-            .collection(
-                "marketplaceTransactions"
-            )
-            .doc(transactionId);
-
-
-    /*
-    =====================================================
-    PRODUCT
-    =====================================================
-    */
-
-    const listingId =
-        order.listingId;
-
-
-    if (!listingId) {
-
-        throw new Error(
-            "Order listingId is missing."
-        );
-
-    }
-
-
-    const productRef =
-        db
-            .collection("products")
-            .doc(listingId);
-
-
-    const now =
-        new Date();
-
-
-    /*
-    =====================================================
-    ATOMIC PAYMENT PROCESSING
-    =====================================================
-    */
-
-    await db.runTransaction(
-        async (transaction) => {
-
-            /*
-            IMPORTANT:
-            All reads happen before writes.
-            */
-
-            const freshOrderSnap =
-                await transaction.get(
-                    orderRef
-                );
-
-
-            if (
-                !freshOrderSnap.exists
-            ) {
-
-                throw new Error(
-                    "Marketplace order no longer exists."
-                );
-
-            }
-
-
-            const freshOrder =
-                freshOrderSnap.data();
-
-
-            /*
-            ---------------------------------------------
-            ALREADY PAID
-            ---------------------------------------------
-            */
-
-            if (
-                freshOrder.paymentStatus ===
-                    "COMPLETED" ||
-                freshOrder.paymentStatus ===
-                    "PAID"
-            ) {
-
-                return;
-
-            }
-
-
-            /*
-            ---------------------------------------------
-            PRODUCT
-            ---------------------------------------------
-            */
-
-            const productSnap =
-                await transaction.get(
-                    productRef
-                );
-
-
-            if (
-                !productSnap.exists
-            ) {
-
-                throw new Error(
-                    "Product no longer exists."
-                );
-
-            }
-
-
-            const product =
-                productSnap.data();
-
-
-            /*
-            ---------------------------------------------
-            QUANTITY
-            ---------------------------------------------
-            */
-
-            const quantity =
-                Number(
-                    freshOrder.quantity || 1
-                );
-
-
-            if (
-                !Number.isInteger(quantity) ||
-                quantity <= 0
-            ) {
-
-                throw new Error(
-                    "Invalid order quantity."
-                );
-
-            }
-
-
-            /*
-            ---------------------------------------------
-            STOCK
-            ---------------------------------------------
-            */
-
-            const currentStock =
-                Number(
-                    product.stock || 0
-                );
-
-
-            if (
-                currentStock < quantity
-            ) {
-
-                throw new Error(
-                    "Insufficient stock to complete this payment."
-                );
-
-            }
-
-            /*
-            ---------------------------------------------
-            REDUCE STOCK
-            ---------------------------------------------
-            */
-
-            transaction.update(
-                productRef,
-                {
-
-                    stock:
-                        currentStock -
-                        quantity,
-
-                    updatedAt:
-                        now,
-
-                }
-            );
-
-
-            /*
-            ---------------------------------------------
-            UPDATE ORDER
-            ---------------------------------------------
-            */
-
-            transaction.update(
-                orderRef,
-                {
-
-                    status:
-                        "PAID",
-
-                    paymentStatus:
-                        "COMPLETED",
-
-                    paymentCompletedAt:
-                        now,
-
-                    provider:
-                        "MPESA",
-
-                    paymentMethod:
-                        "MPESA",
-
-                    providerTransactionId,
-
-                    checkoutRequestID:
-                        checkoutRequestID ||
-                        freshOrder.checkoutRequestID ||
-                        null,
-
-                    mpesaReceiptNumber:
-                        receiptNumber ||
-                        null,
-
-                    paidPhone:
-                        phoneNumber ||
-                        freshOrder.buyerPhone ||
-                        null,
-
-                    paidAmount,
-
-                    updatedAt:
-                        now,
-
-                }
-            );
-
-
-            /*
-            ---------------------------------------------
-            PAYMENT RECORD
-            ---------------------------------------------
-            */
-
-            transaction.set(
-                paymentRef,
-                {
-
-                    paymentId,
-
-                    orderId,
-
-                    buyerId:
-                        freshOrder.buyerId,
-
-                    sellerId:
-                        freshOrder.sellerId ||
-                        null,
-
-                    listingId:
-                        freshOrder.listingId ||
-                        null,
-
-                    amount:
-                        paidAmount,
-
-                    currency:
-                        "KES",
-
-                    method:
-                        "MPESA",
-
-                    provider:
-                        "MPESA",
-
-                    phone:
-                        phoneNumber ||
-                        freshOrder.buyerPhone ||
-                        null,
-
-                    checkoutRequestID:
-                        checkoutRequestID ||
-                        freshOrder.checkoutRequestID ||
-                        null,
-
-                    providerTransactionId,
-
-                    mpesaReceiptNumber:
-                        receiptNumber ||
-                        null,
-
-                    status:
-                        "COMPLETED",
-
-                    providerResponse:
-                        providerResponse ||
-                        null,
-
-                    completedAt:
-                        now,
-
-                    updatedAt:
-                        now,
-
-                },
-                {
-                    merge: true
-                }
-            );
-
-
-            /*
-            ---------------------------------------------
-            FINANCIAL LEDGER
-            ---------------------------------------------
-            */
-
-            transaction.set(
-                transactionRef,
-                {
-
-                    transactionId,
-
-                    type:
-                        "MARKETPLACE_SALE",
-
-                    orderId,
-
-                    paymentId,
-
-                    buyerId:
-                        freshOrder.buyerId,
-
-                    sellerId:
-                        freshOrder.sellerId ||
-                        null,
-
-                    listingId:
-                        freshOrder.listingId ||
-                        null,
-
-                    amount:
-                        paidAmount,
-
-                    currency:
-                        "KES",
-
-                    commissionRate:
-                        Number(
-                            freshOrder.commissionRate ||
-                            0
-                        ),
-
-                    commissionAmount:
-                        Number(
-                            freshOrder.commissionAmount ||
-                            0
-                        ),
-
-                    sellerGross:
-                        Number(
-                            freshOrder.sellerGross ||
-                            0
-                        ),
-
-                    sellerNet:
-                        Number(
-                            freshOrder.sellerNet ||
-                            0
-                        ),
-
-                    paymentMethod:
-                        "MPESA",
-
-                    provider:
-                        "MPESA",
-
-                    providerTransactionId,
-
-                    mpesaReceiptNumber:
-                        receiptNumber ||
-                        null,
-
-                    status:
-                        "COMPLETED",
-
-                    createdAt:
-                        now,
-
-                    updatedAt:
-                        now,
-
-                }
-            );
-
-        }
+  const expectedAmount =
+    Number(
+      order.buyerTotal
     );
 
 
-    /*
-    =====================================================
-    RESULT
-    =====================================================
-    */
+  if (
+    Math.abs(
+      paidAmount -
+      expectedAmount
+    ) > 0.01
+  ) {
+
+    throw new Error(
+      `Payment amount mismatch. Expected KES ${expectedAmount}, received KES ${paidAmount}.`
+    );
+
+  }
+
+
+  /*
+  ========================================================
+  DUPLICATE PAYMENT CHECK
+  ========================================================
+  */
+
+  const existingPaymentSnap =
+    await db
+      .collection(
+        "marketplacePayments"
+      )
+      .where(
+        "providerTransactionId",
+        "==",
+        providerTransactionId
+      )
+      .limit(1)
+      .get();
+
+
+  if (
+    !existingPaymentSnap.empty
+  ) {
+
+    const existing =
+      existingPaymentSnap
+        .docs[0]
+        .data();
+
 
     return {
 
-        success: true,
+      success: true,
 
-        alreadyProcessed: false,
+      alreadyProcessed: true,
 
-        orderId,
+      orderId,
 
-        paymentId,
+      paymentId:
+        existing.paymentId,
 
-        transactionId,
-
-        providerTransactionId,
-
-        amount:
-            paidAmount,
-
-        commissionAmount:
-            Number(
-                freshOrder.commissionAmount || 0
-            ),
-
-        sellerAmount:
-            Number(
-                order.sellerNet || 0
-            ),
-
-        status:
-            "PAID",
+      providerTransactionId,
 
     };
 
-}
+  }
 
+
+  /*
+  ========================================================
+  PAYMENT ID
+  ========================================================
+  */
+
+  const paymentId =
+    order.paymentId ||
+    generatePaymentId();
+
+
+  const paymentRef =
+    db
+      .collection(
+        "marketplacePayments"
+      )
+      .doc(paymentId);
+
+
+  const transactionId =
+    generateTransactionId();
+
+
+  const transactionRef =
+    db
+      .collection(
+        "marketplaceTransactions"
+      )
+      .doc(transactionId);
+
+
+  /*
+  ========================================================
+  PRODUCT
+  ========================================================
+  */
+
+  const productRef =
+    db
+      .collection("products")
+      .doc(
+        order.listingId
+      );
+
+
+  const now =
+    new Date();
+
+
+  /*
+  ========================================================
+  ATOMIC PAYMENT SUCCESS
+  ========================================================
+  */
+
+  await db.runTransaction(
+    async (transaction) => {
+
+      /*
+      IMPORTANT:
+
+      All reads happen before writes.
+      */
+
+      const freshOrderSnap =
+        await transaction.get(
+          orderRef
+        );
+
+
+      if (
+        !freshOrderSnap.exists
+      ) {
+
+        throw new Error(
+          "Marketplace order no longer exists."
+        );
+
+      }
+
+
+      const freshOrder =
+        freshOrderSnap.data();
+
+
+      /*
+      -----------------------------------------------
+      ALREADY PAID
+      -----------------------------------------------
+      */
+
+      if (
+        freshOrder.paymentStatus ===
+        "COMPLETED"
+      ) {
+
+        return;
+
+      }
+
+
+      /*
+      -----------------------------------------------
+      GET PRODUCT
+      -----------------------------------------------
+      */
+
+      const productSnap =
+        await transaction.get(
+          productRef
+        );
+
+
+      if (
+        !productSnap.exists
+      ) {
+
+        throw new Error(
+          "Product no longer exists."
+        );
+
+      }
+
+
+      const product =
+        productSnap.data();
+
+
+      const quantity =
+        Number(
+          freshOrder.quantity || 1
+        );
+
+
+      const currentStock =
+        Number(
+          product.stock || 0
+        );
+
+
+      /*
+      -----------------------------------------------
+      STOCK
+      -----------------------------------------------
+      */
+
+      if (
+        currentStock <
+        quantity
+      ) {
+
+        throw new Error(
+          "Insufficient stock to complete this payment."
+        );
+
+      }
+
+
+      /*
+      -----------------------------------------------
+      REDUCE STOCK
+      -----------------------------------------------
+      */
+
+      transaction.update(
+        productRef,
+        {
+
+          stock:
+            currentStock -
+            quantity,
+
+          updatedAt:
+            now,
+
+        }
+      );
+
+
+      /*
+      -----------------------------------------------
+      UPDATE ORDER
+      -----------------------------------------------
+      */
+
+      transaction.update(
+        orderRef,
+        {
+
+          status:
+            "PAID",
+
+          paymentStatus:
+            "COMPLETED",
+
+          paymentCompletedAt:
+            now,
+
+          providerTransactionId,
+
+          paymentMethod:
+            "MPESA",
+
+          updatedAt:
+            now,
+
+        }
+      );
+
+
+      /*
+      -----------------------------------------------
+      PAYMENT
+      -----------------------------------------------
+      */
+
+      transaction.set(
+        paymentRef,
+        {
+
+          paymentId,
+
+          orderId,
+
+          buyerId:
+            freshOrder.buyerId,
+
+          sellerId:
+            freshOrder.sellerId ||
+            null,
+
+          listingId:
+            freshOrder.listingId ||
+            null,
+
+          amount:
+            paidAmount,
+
+          currency:
+            "KES",
+
+          method:
+            "MPESA",
+
+          provider:
+            "MPESA",
+
+          providerTransactionId,
+
+          status:
+            "COMPLETED",
+
+          providerResponse:
+            providerResponse ||
+            null,
+
+          completedAt:
+            now,
+
+          updatedAt:
+            now,
+
+        },
+        {
+          merge: true
+        }
+      );
+
+
+      /*
+      -----------------------------------------------
+      FINANCIAL LEDGER
+      -----------------------------------------------
+      */
+
+      transaction.set(
+        transactionRef,
+        {
+
+          transactionId,
+
+          type:
+            "MARKETPLACE_SALE",
+
+          orderId,
+
+          paymentId,
+
+          buyerId:
+            freshOrder.buyerId,
+
+          sellerId:
+            freshOrder.sellerId ||
+            null,
+
+          listingId:
+            freshOrder.listingId ||
+            null,
+
+          amount:
+            paidAmount,
+
+          currency:
+            "KES",
+
+          commissionRate:
+            freshOrder.commissionRate ||
+            0,
+
+          commissionAmount:
+            Number(
+              freshOrder.commissionAmount ||
+              0
+            ),
+
+          sellerGross:
+            Number(
+              freshOrder.sellerGross ||
+              0
+            ),
+
+          sellerNet:
+            Number(
+              freshOrder.sellerNet ||
+              0
+            ),
+
+          paymentMethod:
+            "MPESA",
+
+          provider:
+            "MPESA",
+
+          providerTransactionId,
+
+          status:
+            "COMPLETED",
+
+          createdAt:
+            now,
+
+          updatedAt:
+            now,
+
+        }
+
+      );
+
+    }
+  );
+
+
+  return {
+
+    success: true,
+
+    alreadyProcessed: false,
+
+    orderId,
+
+    paymentId,
+
+    transactionId,
+
+    providerTransactionId,
+
+    amount:
+      paidAmount,
+
+    commissionAmount:
+      Number(
+        freshOrder.commissionAmount ||
+        0
+      ),
+
+    sellerAmount:
+      Number(
+        order.sellerNet ||
+        0
+      ),
+
+    status:
+      "PAID",
+
+  };
+
+}
 
 
 /*
@@ -1402,59 +1346,59 @@ GET PAYMENT
 =========================================================
 */
 
-async function getPayment(paymentId) {
+async function getPayment(
+  paymentId
+) {
 
-    if (!paymentId) {
+  if (!paymentId) {
 
-        throw new Error(
-            "Payment ID is required."
-        );
+    throw new Error(
+      "Payment ID is required."
+    );
 
-    }
-
-
-    const snap =
-        await db
-            .collection(
-                "marketplacePayments"
-            )
-            .doc(paymentId)
-            .get();
+  }
 
 
-    if (!snap.exists) {
+  const snap =
+    await db
+      .collection(
+        "marketplacePayments"
+      )
+      .doc(paymentId)
+      .get();
 
-        return null;
 
-    }
+  if (!snap.exists) {
+
+    return null;
+
+  }
 
 
-    return {
+  return {
 
-        id:
-            snap.id,
+    id:
+      snap.id,
 
-        ...snap.data(),
+    ...snap.data(),
 
-    };
+  };
 
 }
 
 
-
 /*
 =========================================================
-EXPORTS
+EXPORT
 =========================================================
 */
 
 module.exports = {
 
-    initiateMarketplacePayment,
+  initiateMarketplacePayment,
 
-    processMarketplacePayment,
+  processMarketplacePayment,
 
-    getPayment,
+  getPayment,
 
 };
-           
