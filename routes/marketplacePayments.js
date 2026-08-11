@@ -1,35 +1,35 @@
 const express = require("express");
 
-const router =
-    express.Router();
+const router = express.Router();
 
 const {
     getAuth,
 } = require("firebase-admin/auth");
 
 const {
-    db,
-} = require("../config/firebase");
-
-const {
     initiateMarketplacePayment,
     getPayment,
-} = require(
-    "../services/marketplacePayment"
-);
+} = require("../services/paymentService");
 
 
 /*
 =========================================================
 AUTHENTICATION
 =========================================================
+
+Every marketplace payment request must come from an
+authenticated Firebase user.
+
+The buyer ID is NEVER accepted from the frontend.
+
+It comes from:
+
+    req.user.uid
+
+=========================================================
 */
 
-async function authenticateUser(
-    req,
-    res,
-    next
-) {
+async function authenticateUser(req, res, next) {
 
     try {
 
@@ -39,9 +39,7 @@ async function authenticateUser(
 
         if (
             !authorization ||
-            !authorization.startsWith(
-                "Bearer "
-            )
+            !authorization.startsWith("Bearer ")
         ) {
 
             return res.status(401).json({
@@ -57,9 +55,7 @@ async function authenticateUser(
 
 
         const token =
-            authorization.substring(
-                7
-            );
+            authorization.substring(7);
 
 
         if (!token) {
@@ -78,10 +74,14 @@ async function authenticateUser(
 
         const decodedToken =
             await getAuth()
-                .verifyIdToken(
-                    token
-                );
+                .verifyIdToken(token);
 
+
+        /*
+        ---------------------------------------------
+        STORE FIREBASE USER
+        ---------------------------------------------
+        */
 
         req.user =
             decodedToken;
@@ -93,7 +93,7 @@ async function authenticateUser(
     } catch (error) {
 
         console.error(
-            "Marketplace payment authentication error:",
+            "❌ Marketplace payment authentication error:",
             error
         );
 
@@ -121,21 +121,35 @@ POST
 
 /api/marketplace/payments/initiate
 
-BODY:
+
+FRONTEND BODY:
 
 {
     orderId,
     phone,
-    paymentMethod
+    paymentMethod: "MPESA"
 }
+
 
 IMPORTANT:
 
-buyerId is NEVER accepted from frontend.
+buyerId is NOT sent by the frontend.
 
-It comes from:
+The backend gets it from:
 
-req.user.uid
+    req.user.uid
+
+
+The payment service then:
+
+1. Finds the marketplace order
+2. Verifies the buyer
+3. Verifies the order status
+4. Gets the real order amount
+5. Initiates IntaSend M-PESA
+6. Creates marketplacePayments record
+7. Updates marketplaceOrders
+8. Returns payment information
 
 =========================================================
 */
@@ -149,13 +163,19 @@ router.post(
 
             /*
             =============================================
-            BUYER
+            BUYER ID
             =============================================
             */
 
             const buyerId =
                 req.user.uid;
 
+
+            /*
+            =============================================
+            REQUEST BODY
+            =============================================
+            */
 
             const {
 
@@ -165,15 +185,14 @@ router.post(
 
                 phoneNumber,
 
-                paymentMethod =
-                    "MPESA",
+                paymentMethod = "MPESA",
 
             } = req.body;
 
 
             /*
             =============================================
-            PHONE COMPATIBILITY
+            PHONE
             =============================================
             */
 
@@ -184,7 +203,7 @@ router.post(
 
             /*
             =============================================
-            VALIDATION
+            VALIDATE ORDER ID
             =============================================
             */
 
@@ -202,6 +221,12 @@ router.post(
             }
 
 
+            /*
+            =============================================
+            VALIDATE PHONE
+            =============================================
+            */
+
             if (!buyerPhone) {
 
                 return res.status(400).json({
@@ -218,23 +243,27 @@ router.post(
 
             /*
             =============================================
-            PAYMENT METHOD
+            NORMALIZE PAYMENT METHOD
             =============================================
             */
 
             const normalizedPaymentMethod =
                 String(
-                    paymentMethod ||
-                    "MPESA"
+                    paymentMethod || "MPESA"
                 )
                     .trim()
                     .toUpperCase()
-                    .replace("-", "");
+                    .replace(/[\s-]/g, "");
 
+
+            /*
+            =============================================
+            CURRENTLY ONLY MPESA
+            =============================================
+            */
 
             if (
-                normalizedPaymentMethod !==
-                "MPESA"
+                normalizedPaymentMethod !== "MPESA"
             ) {
 
                 return res.status(400).json({
@@ -251,7 +280,7 @@ router.post(
 
             /*
             =============================================
-            INITIATE
+            INITIATE PAYMENT
             =============================================
             */
 
@@ -273,7 +302,7 @@ router.post(
 
             /*
             =============================================
-            RESPONSE
+            SUCCESS RESPONSE
             =============================================
             */
 
@@ -282,7 +311,7 @@ router.post(
                 success: true,
 
                 message:
-                    "M-PESA payment initiated successfully.",
+                    "M-PESA payment request initiated successfully.",
 
                 payment:
                     result,
@@ -304,7 +333,7 @@ router.post(
 
                 message:
                     error?.message ||
-                    "Failed to initiate marketplace payment.",
+                    "Failed to initiate M-PESA payment.",
 
             });
 
@@ -323,8 +352,13 @@ GET
 
 /api/marketplace/payments/:paymentId
 
-Only the buyer or seller belonging to the payment
-can view it.
+Only:
+
+- buyer
+- seller
+
+can view the payment.
+
 =========================================================
 */
 
@@ -340,6 +374,12 @@ router.get(
             } = req.params;
 
 
+            /*
+            =============================================
+            VALIDATE PAYMENT ID
+            =============================================
+            */
+
             if (!paymentId) {
 
                 return res.status(400).json({
@@ -353,6 +393,12 @@ router.get(
 
             }
 
+
+            /*
+            =============================================
+            GET PAYMENT
+            =============================================
+            */
 
             const payment =
                 await getPayment(
@@ -376,19 +422,25 @@ router.get(
 
             /*
             =============================================
+            CURRENT USER
+            =============================================
+            */
+
+            const currentUserId =
+                req.user.uid;
+
+
+            /*
+            =============================================
             AUTHORIZATION
             =============================================
             */
 
-            const currentUser =
-                req.user.uid;
-
-
             if (
                 payment.buyerId !==
-                    currentUser &&
+                    currentUserId &&
                 payment.sellerId !==
-                    currentUser
+                    currentUserId
             ) {
 
                 return res.status(403).json({
@@ -402,6 +454,12 @@ router.get(
 
             }
 
+
+            /*
+            =============================================
+            SUCCESS
+            =============================================
+            */
 
             return res.status(200).json({
 
