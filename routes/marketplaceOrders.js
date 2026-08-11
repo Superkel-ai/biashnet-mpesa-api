@@ -197,14 +197,80 @@ productId field inside Firestore.
 router.post(
     "/cart",
     authenticateUser,
-    createCartOrder
-);
-
-router.post(
-    "/",
-    authenticateUser,
     async (req, res) => {
-        // existing single-product order
+
+        try {
+
+            const result =
+                await createCartOrder({
+
+                    buyerId:
+                        req.user.uid,
+
+                    items:
+                        req.body.items,
+
+                    deliveryFee:
+                        req.body.deliveryFee || 0,
+
+                    paymentMethod:
+                        req.body.paymentMethod || "MPESA",
+
+                    buyerPhone:
+                        req.body.buyerPhone,
+
+                    deliveryLocation:
+                        req.body.deliveryLocation,
+
+                    deliveryNote:
+                        req.body.deliveryNote,
+
+                    pickupStation:
+                        req.body.pickupStation,
+
+                    doorDelivery:
+                        req.body.doorDelivery,
+
+                });
+
+
+            return res.status(201).json({
+
+                success: true,
+
+                message:
+                    "Cart order created successfully.",
+
+                orderId:
+                    result.orderId,
+
+                paymentId:
+                    result.paymentId,
+
+                order:
+                    result,
+
+            });
+
+        } catch (error) {
+
+            console.error(
+                "❌ Cart order creation error:",
+                error
+            );
+
+            return res.status(400).json({
+
+                success: false,
+
+                message:
+                    error.message ||
+                    "Unable to create cart order.",
+
+            });
+
+        }
+
     }
 );
 
