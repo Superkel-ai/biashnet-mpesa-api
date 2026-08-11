@@ -1,10 +1,22 @@
-const { db } = require("../config/firebase");
-const { stkPush } = require("./mpesa");
+const {
+  db
+} = require("../config/firebase");
+
+const {
+  stkPush
+} = require("./mpesa");
+
 
 /*
 =========================================================
 MARKETPLACE PAYMENT SERVICE
 =========================================================
+
+Uses:
+
+services/mpesa.js
+
+NOT IntaSend.
 
 Collections:
 
@@ -18,12 +30,11 @@ products/{listingId}
 
 IMPORTANT:
 
-- buyerId comes from Firebase Authentication.
-- sellerId comes from the order/product.
-- Amount comes ONLY from marketplaceOrders.
-- Frontend amount is NEVER trusted.
-- STK Push uses the existing services/mpesa.js.
-- Stock is reduced ONLY after successful payment callback.
+- buyerId comes from Firebase Auth
+- amount comes from marketplaceOrders
+- frontend amount is never trusted
+- sellerId comes from the order
+- stock is reduced ONLY after successful payment
 =========================================================
 */
 
@@ -40,40 +51,65 @@ function normalizePhone(phone) {
     return "";
   }
 
-  let value = String(phone)
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(/-/g, "");
+  let value =
+    String(phone)
+      .trim()
+      .replace(/\s+/g, "")
+      .replace(/-/g, "");
 
-  // +254712345678 -> 254712345678
-  if (value.startsWith("+254")) {
-    value = value.substring(1);
-  }
 
-  // 0712345678 -> 254712345678
+  /*
+  0712345678
+  ->
+  254712345678
+  */
+
   if (
     value.startsWith("0") &&
     value.length === 10
   ) {
+
     value =
       "254" +
       value.substring(1);
+
   }
 
+
+  /*
+  +254712345678
+  ->
+  254712345678
+  */
+
+  if (
+    value.startsWith("+254")
+  ) {
+
+    value =
+      value.substring(1);
+
+  }
+
+
   return value;
+
 }
 
 
 function normalizePaymentMethod(method) {
 
-  const value = String(
-    method || "MPESA"
-  )
-    .trim()
-    .toUpperCase()
-    .replace("-", "");
+  const value =
+    String(method || "MPESA")
+      .trim()
+      .toUpperCase()
+      .replace("-", "");
 
-  return value;
+
+  return value === "MPESA"
+    ? "MPESA"
+    : value;
+
 }
 
 
@@ -86,6 +122,7 @@ function generatePaymentId() {
       .substring(2, 8)
       .toUpperCase()
   );
+
 }
 
 
@@ -98,6 +135,7 @@ function generateTransactionId() {
       .substring(2, 8)
       .toUpperCase()
   );
+
 }
 
 
@@ -106,19 +144,18 @@ function generateTransactionId() {
 INITIATE MARKETPLACE PAYMENT
 =========================================================
 
-POST:
+Flow:
 
-/api/marketplace/payments/initiate
-
-This function:
-
-1. Gets order
-2. Verifies buyer
-3. Gets authoritative amount
-4. Normalizes phone
-5. Calls YOUR existing mpesa.js
-6. Saves CheckoutRequestID
-7. Updates order
+1. Get order
+2. Verify buyer
+3. Verify order status
+4. Get authoritative amount
+5. Normalize phone
+6. Check for REAL active STK
+7. Call your existing stkPush()
+8. Save CheckoutRequestID
+9. Update order
+10. Return result
 =========================================================
 */
 
@@ -163,9 +200,9 @@ async function initiateMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   VALIDATION
-  ========================================================
+  =======================================================
   */
 
   if (!orderId) {
@@ -204,14 +241,16 @@ async function initiateMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   GET ORDER
-  ========================================================
+  =======================================================
   */
 
   const orderRef =
     db
-      .collection("marketplaceOrders")
+      .collection(
+        "marketplaceOrders"
+      )
       .doc(orderId);
 
 
@@ -243,9 +282,9 @@ async function initiateMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   VERIFY BUYER
-  ========================================================
+  =======================================================
   */
 
   if (
@@ -260,9 +299,9 @@ async function initiateMarketplacePayment({
 
 
   /*
-  ========================================================
-  VERIFY ORDER STATUS
-  ========================================================
+  =======================================================
+  CHECK PAYMENT STATUS
+  =======================================================
   */
 
   if (
@@ -277,6 +316,12 @@ async function initiateMarketplacePayment({
   }
 
 
+  /*
+  =======================================================
+  ORDER STATUS
+  =======================================================
+  */
+
   if (
     order.status !==
       "PENDING_PAYMENT" &&
@@ -285,16 +330,16 @@ async function initiateMarketplacePayment({
   ) {
 
     throw new Error(
-      `This order cannot be paid. Current status: ${order.status}`
+      `This order cannot be paid. Current status: ${order.status}.`
     );
 
   }
 
 
   /*
-  ========================================================
+  =======================================================
   AUTHORITATIVE AMOUNT
-  ========================================================
+  =======================================================
   */
 
   const amount =
@@ -315,10 +360,16 @@ async function initiateMarketplacePayment({
   }
 
 
+  console.log(
+    "💰 Marketplace amount:",
+    amount
+  );
+
+
   /*
-  ========================================================
+  =======================================================
   PHONE
-  ========================================================
+  =======================================================
   */
 
   const phone =
@@ -337,7 +388,7 @@ async function initiateMarketplacePayment({
   if (!phone) {
 
     throw new Error(
-      "M-Pesa phone number is required."
+      "M-PESA phone number is required."
     );
 
   }
@@ -348,16 +399,16 @@ async function initiateMarketplacePayment({
   ) {
 
     throw new Error(
-      "Invalid Kenyan M-Pesa phone number. Use 2547XXXXXXXX."
+      "Invalid Kenyan M-PESA phone number. Use 07XXXXXXXX or 2547XXXXXXXX."
     );
 
   }
 
 
   /*
-  ========================================================
+  =======================================================
   PAYMENT ID
-  ========================================================
+  =======================================================
   */
 
   const paymentId =
@@ -374,9 +425,24 @@ async function initiateMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   CHECK EXISTING PAYMENT
-  ========================================================
+  =======================================================
+
+  IMPORTANT FIX:
+
+  DO NOT blindly trust:
+
+      status === "PENDING"
+
+  A previous broken/old payment may have:
+
+      status: PENDING
+
+  but NO CheckoutRequestID.
+
+  Such a payment must NOT block a new STK push.
+  =======================================================
   */
 
   const existingPaymentSnap =
@@ -391,16 +457,32 @@ async function initiateMarketplacePayment({
       existingPaymentSnap.data();
 
 
+    const existingCheckoutId =
+      existingPayment.checkoutRequestID ||
+      existingPayment.checkoutRequestId ||
+      null;
+
+
+    const existingMerchantId =
+      existingPayment.merchantRequestID ||
+      existingPayment.merchantRequestId ||
+      null;
+
+
+    /*
+    -------------------------------------------------------
+    REAL ACTIVE STK EXISTS
+    -------------------------------------------------------
+    */
+
     if (
-      existingPayment.status ===
-        "PENDING" ||
-      existingPayment.status ===
-        "PROCESSING"
+      existingPayment.status === "PENDING" &&
+      existingCheckoutId
     ) {
 
       console.log(
-        "⚠️ Existing pending payment found:",
-        paymentId
+        "🟢 Existing REAL M-PESA STK found:",
+        existingCheckoutId
       );
 
 
@@ -422,37 +504,47 @@ async function initiateMarketplacePayment({
 
         paymentMethod: "MPESA",
 
-        status:
-          existingPayment.status,
+        status: "PENDING",
 
         checkoutRequestID:
-          existingPayment.checkoutRequestID ||
-          null,
+          existingCheckoutId,
 
         merchantRequestID:
-          existingPayment.merchantRequestID ||
-          null,
+          existingMerchantId,
+
+        message:
+          "An M-PESA payment request is already active. Check your phone.",
 
       };
 
     }
 
+
+    /*
+    -------------------------------------------------------
+    STALE / BROKEN PAYMENT
+    -------------------------------------------------------
+
+    Example:
+
+    status = PENDING
+    checkoutRequestID = null
+
+    This must NOT block a new STK.
+    -------------------------------------------------------
+    */
+
+    console.log(
+      "⚠️ Existing payment is stale or incomplete. Creating a new M-PESA STK."
+    );
+
   }
 
 
   /*
-  ========================================================
-  M-PESA STK PUSH
-  ========================================================
-
-  THIS IS THE IMPORTANT PART.
-
-  It uses exactly the same:
-
-      services/mpesa.js
-
-  used by your working investor Deposit dialog.
-  ========================================================
+  =======================================================
+  CALL YOUR REAL M-PESA STK SERVICE
+  =======================================================
   */
 
   let mpesaResponse;
@@ -461,17 +553,7 @@ async function initiateMarketplacePayment({
   try {
 
     console.log(
-      "📲 Sending marketplace M-Pesa STK..."
-    );
-
-    console.log(
-      "Amount:",
-      amount
-    );
-
-    console.log(
-      "Phone:",
-      phone
+      "📲 Calling Safaricom M-PESA STK..."
     );
 
 
@@ -483,13 +565,19 @@ async function initiateMarketplacePayment({
       );
 
 
+    console.log(
+      "✅ M-PESA RESPONSE:",
+      JSON.stringify(
+        mpesaResponse,
+        null,
+        2
+      )
+    );
+
   } catch (error) {
 
     console.error(
-      "❌ MARKETPLACE STK PUSH ERROR:"
-    );
-
-    console.error(
+      "❌ M-PESA STK PUSH ERROR:",
       error.response?.data ||
       error.message ||
       error
@@ -498,37 +586,18 @@ async function initiateMarketplacePayment({
 
     throw new Error(
       error.response?.data?.errorMessage ||
-      error.response?.data?.errorDescription ||
+      error.response?.data?.errorCode ||
       error.message ||
-      "Failed to initiate M-Pesa STK Push."
+      "Failed to initiate M-PESA STK Push."
     );
 
   }
 
 
   /*
-  ========================================================
-  LOG SAFARICOM RESPONSE
-  ========================================================
-  */
-
-  console.log(
-    "✅ MARKETPLACE M-PESA RESPONSE:"
-  );
-
-  console.log(
-    JSON.stringify(
-      mpesaResponse,
-      null,
-      2
-    )
-  );
-
-
-  /*
-  ========================================================
+  =======================================================
   VERIFY SAFARICOM RESPONSE
-  ========================================================
+  =======================================================
   */
 
   if (
@@ -538,212 +607,174 @@ async function initiateMarketplacePayment({
   ) {
 
     console.error(
-      "❌ Safaricom rejected STK request:"
-    );
-
-    console.error(
+      "❌ Safaricom rejected STK:",
       mpesaResponse
     );
 
 
     throw new Error(
       mpesaResponse?.ResponseDescription ||
-      mpesaResponse?.CustomerMessage ||
-      "M-Pesa STK Push was rejected."
+      "M-PESA STK Push was rejected."
     );
 
   }
 
 
   /*
-  ========================================================
-  EXTRACT SAFARICOM IDS
-  ========================================================
+  =======================================================
+  EXTRACT MPESA IDs
+  =======================================================
   */
 
   const checkoutRequestID =
-    mpesaResponse
-      ?.CheckoutRequestID ||
-    null;
+    mpesaResponse.CheckoutRequestID;
 
 
   const merchantRequestID =
-    mpesaResponse
-      ?.MerchantRequestID ||
-    null;
+    mpesaResponse.MerchantRequestID;
 
 
   if (!checkoutRequestID) {
 
     throw new Error(
-      "M-Pesa did not return a CheckoutRequestID."
+      "M-PESA did not return a CheckoutRequestID."
     );
 
   }
 
 
+  console.log(
+    "🟢 CheckoutRequestID:",
+    checkoutRequestID
+  );
+
+
+  console.log(
+    "🟢 MerchantRequestID:",
+    merchantRequestID
+  );
+
+
+  /*
+  =======================================================
+  SAVE PAYMENT
+  =======================================================
+  */
+
   const now =
     new Date();
 
 
-  /*
-  ========================================================
-  SAVE PAYMENT + UPDATE ORDER
-  ========================================================
-  */
+  await paymentRef.set(
+    {
 
-  await db.runTransaction(
-    async (transaction) => {
+      paymentId,
 
-      const freshOrderSnap =
-        await transaction.get(
-          orderRef
-        );
+      orderId,
 
+      buyerId,
 
-      if (
-        !freshOrderSnap.exists
-      ) {
+      sellerId:
+        order.sellerId,
 
-        throw new Error(
-          "Marketplace order no longer exists."
-        );
+      listingId:
+        order.listingId,
 
-      }
+      amount,
 
+      currency:
+        "KES",
 
-      const freshOrder =
-        freshOrderSnap.data();
+      method:
+        "MPESA",
 
+      provider:
+        "MPESA",
 
-      if (
-        freshOrder.buyerId !==
-        buyerId
-      ) {
+      phone,
 
-        throw new Error(
-          "Order ownership verification failed."
-        );
+      status:
+        "PENDING",
 
-      }
+      checkoutRequestID,
 
+      merchantRequestID,
 
       /*
-      -----------------------------------------------
-      PAYMENT RECORD
-      -----------------------------------------------
+      Keep original Safaricom response.
       */
 
-      transaction.set(
-        paymentRef,
-        {
+      providerResponse:
+        mpesaResponse,
 
-          paymentId,
+      createdAt:
+        existingPaymentSnap.exists
+          ? (
+              existingPaymentSnap
+                .data()
+                .createdAt ||
+              now
+            )
+          : now,
 
-          orderId,
+      updatedAt:
+        now,
 
-          buyerId,
+    },
 
-          sellerId:
-            freshOrder.sellerId ||
-            null,
-
-          listingId:
-            freshOrder.listingId ||
-            null,
-
-          amount,
-
-          currency:
-            "KES",
-
-          method:
-            "MPESA",
-
-          provider:
-            "MPESA",
-
-          phone,
-
-          status:
-            "PENDING",
-
-          checkoutRequestID,
-
-          merchantRequestID,
-
-          providerResponse:
-            mpesaResponse,
-
-          createdAt:
-            now,
-
-          updatedAt:
-            now,
-
-        },
-        {
-          merge: true
-        }
-      );
-
-
-      /*
-      -----------------------------------------------
-      UPDATE ORDER
-      -----------------------------------------------
-      */
-
-      transaction.update(
-        orderRef,
-        {
-
-          paymentId,
-
-          paymentMethod:
-            "MPESA",
-
-          buyerPhone:
-            phone,
-
-          status:
-            "PAYMENT_INITIATED",
-
-          paymentStatus:
-            "PENDING",
-
-          checkoutRequestID,
-
-          merchantRequestID,
-
-          paymentInitiatedAt:
-            now,
-
-          updatedAt:
-            now,
-
-        }
-      );
-
+    {
+      merge: true
     }
+
   );
 
 
   /*
-  ========================================================
-  SUCCESS
-  ========================================================
+  =======================================================
+  UPDATE ORDER
+  =======================================================
   */
 
-  console.log(
-    "🟢 MARKETPLACE STK SUCCESS"
-  );
+  await orderRef.update({
+
+    paymentId,
+
+    paymentMethod:
+      "MPESA",
+
+    buyerPhone:
+      phone,
+
+    status:
+      "PAYMENT_INITIATED",
+
+    paymentStatus:
+      "PENDING",
+
+    checkoutRequestID,
+
+    merchantRequestID,
+
+    paymentInitiatedAt:
+      now,
+
+    updatedAt:
+      now,
+
+  });
+
 
   console.log(
-    "CheckoutRequestID:",
-    checkoutRequestID
+    "💾 Marketplace payment saved:",
+    paymentId
   );
 
+
+  /*
+  =======================================================
+  RETURN TO FRONTEND
+  =======================================================
+  */
 
   return {
 
@@ -777,7 +808,7 @@ async function initiateMarketplacePayment({
 
     message:
       mpesaResponse.CustomerMessage ||
-      "M-Pesa payment request sent. Check your phone and enter your M-Pesa PIN.",
+      "M-PESA payment request sent. Check your phone and enter your M-PESA PIN.",
 
   };
 
@@ -789,12 +820,16 @@ async function initiateMarketplacePayment({
 PROCESS SUCCESSFUL MARKETPLACE PAYMENT
 =========================================================
 
-Called by your M-Pesa callback.
+Called from your M-PESA callback.
 
-IMPORTANT:
+The callback should provide:
 
-Stock is reduced ONLY after Safaricom confirms
-successful payment.
+orderId
+providerTransactionId
+amount
+providerResponse
+
+Stock is reduced ONLY after successful payment.
 =========================================================
 */
 
@@ -824,7 +859,7 @@ async function processMarketplacePayment({
   if (!providerTransactionId) {
 
     throw new Error(
-      "M-Pesa transaction ID is required."
+      "M-PESA transaction ID is required."
     );
 
   }
@@ -847,9 +882,9 @@ async function processMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   GET ORDER
-  ========================================================
+  =======================================================
   */
 
   const orderRef =
@@ -878,9 +913,9 @@ async function processMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   VERIFY AMOUNT
-  ========================================================
+  =======================================================
   */
 
   const expectedAmount =
@@ -904,9 +939,9 @@ async function processMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   DUPLICATE PAYMENT CHECK
-  ========================================================
+  =======================================================
   */
 
   const existingPaymentSnap =
@@ -952,9 +987,9 @@ async function processMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   PAYMENT ID
-  ========================================================
+  =======================================================
   */
 
   const paymentId =
@@ -982,18 +1017,10 @@ async function processMarketplacePayment({
       .doc(transactionId);
 
 
-  /*
-  ========================================================
-  PRODUCT
-  ========================================================
-  */
-
   const productRef =
     db
       .collection("products")
-      .doc(
-        order.listingId
-      );
+      .doc(order.listingId);
 
 
   const now =
@@ -1001,18 +1028,18 @@ async function processMarketplacePayment({
 
 
   /*
-  ========================================================
+  =======================================================
   ATOMIC PAYMENT SUCCESS
-  ========================================================
+  =======================================================
   */
 
   await db.runTransaction(
     async (transaction) => {
 
       /*
-      IMPORTANT:
-
-      All reads happen before writes.
+      ---------------------------------------------------
+      READ ORDER
+      ---------------------------------------------------
       */
 
       const freshOrderSnap =
@@ -1037,9 +1064,9 @@ async function processMarketplacePayment({
 
 
       /*
-      -----------------------------------------------
+      ---------------------------------------------------
       ALREADY PAID
-      -----------------------------------------------
+      ---------------------------------------------------
       */
 
       if (
@@ -1053,9 +1080,9 @@ async function processMarketplacePayment({
 
 
       /*
-      -----------------------------------------------
-      GET PRODUCT
-      -----------------------------------------------
+      ---------------------------------------------------
+      READ PRODUCT
+      ---------------------------------------------------
       */
 
       const productSnap =
@@ -1079,9 +1106,15 @@ async function processMarketplacePayment({
         productSnap.data();
 
 
+      /*
+      ---------------------------------------------------
+      CURRENT STOCK
+      ---------------------------------------------------
+      */
+
       const quantity =
         Number(
-          freshOrder.quantity || 1
+          freshOrder.quantity || 0
         );
 
 
@@ -1091,15 +1124,19 @@ async function processMarketplacePayment({
         );
 
 
-      /*
-      -----------------------------------------------
-      STOCK
-      -----------------------------------------------
-      */
+      if (
+        quantity <= 0
+      ) {
+
+        throw new Error(
+          "Invalid order quantity."
+        );
+
+      }
+
 
       if (
-        currentStock <
-        quantity
+        currentStock < quantity
       ) {
 
         throw new Error(
@@ -1110,9 +1147,9 @@ async function processMarketplacePayment({
 
 
       /*
-      -----------------------------------------------
+      ---------------------------------------------------
       REDUCE STOCK
-      -----------------------------------------------
+      ---------------------------------------------------
       */
 
       transaction.update(
@@ -1131,9 +1168,9 @@ async function processMarketplacePayment({
 
 
       /*
-      -----------------------------------------------
+      ---------------------------------------------------
       UPDATE ORDER
-      -----------------------------------------------
+      ---------------------------------------------------
       */
 
       transaction.update(
@@ -1154,6 +1191,18 @@ async function processMarketplacePayment({
           paymentMethod:
             "MPESA",
 
+          fundsReceived:
+            true,
+
+          fundsHeld:
+            true,
+
+          sellerPaymentStatus:
+            "HELD",
+
+          payoutStatus:
+            "NOT_RELEASED",
+
           updatedAt:
             now,
 
@@ -1162,9 +1211,9 @@ async function processMarketplacePayment({
 
 
       /*
-      -----------------------------------------------
-      PAYMENT
-      -----------------------------------------------
+      ---------------------------------------------------
+      PAYMENT RECORD
+      ---------------------------------------------------
       */
 
       transaction.set(
@@ -1179,12 +1228,10 @@ async function processMarketplacePayment({
             freshOrder.buyerId,
 
           sellerId:
-            freshOrder.sellerId ||
-            null,
+            freshOrder.sellerId,
 
           listingId:
-            freshOrder.listingId ||
-            null,
+            freshOrder.listingId,
 
           amount:
             paidAmount,
@@ -1214,16 +1261,18 @@ async function processMarketplacePayment({
             now,
 
         },
+
         {
           merge: true
         }
+
       );
 
 
       /*
-      -----------------------------------------------
+      ---------------------------------------------------
       FINANCIAL LEDGER
-      -----------------------------------------------
+      ---------------------------------------------------
       */
 
       transaction.set(
@@ -1243,12 +1292,10 @@ async function processMarketplacePayment({
             freshOrder.buyerId,
 
           sellerId:
-            freshOrder.sellerId ||
-            null,
+            freshOrder.sellerId,
 
           listingId:
-            freshOrder.listingId ||
-            null,
+            freshOrder.listingId,
 
           amount:
             paidAmount,
@@ -1257,8 +1304,10 @@ async function processMarketplacePayment({
             "KES",
 
           commissionRate:
-            freshOrder.commissionRate ||
-            0,
+            Number(
+              freshOrder.commissionRate ||
+              0
+            ),
 
           commissionAmount:
             Number(
@@ -1322,7 +1371,7 @@ async function processMarketplacePayment({
 
     commissionAmount:
       Number(
-        freshOrder.commissionAmount ||
+        order.commissionAmount ||
         0
       ),
 
@@ -1389,7 +1438,7 @@ async function getPayment(
 
 /*
 =========================================================
-EXPORT
+EXPORTS
 =========================================================
 */
 
