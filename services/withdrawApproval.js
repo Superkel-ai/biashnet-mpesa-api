@@ -19,7 +19,7 @@ async function approveWithdrawal(withdrawalId) {
     const doc = await tx.get(withdrawalRef);
 
     if (!doc.exists) {
-      throw new Error("Withdrawal not found");
+      throw new Error("Withdrwal not found");
     }
 
     const data = doc.data();
