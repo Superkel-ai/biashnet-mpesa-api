@@ -14,7 +14,7 @@ const {
 
 const {
   calculateCommission,
-} = require("../services/commissionService");
+} = require("./commissionService");
 
 
 /*
