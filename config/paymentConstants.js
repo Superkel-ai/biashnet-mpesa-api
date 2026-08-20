@@ -187,5 +187,3 @@ module.exports = {
     MIN_WITHDRAWAL_AMOUNT,
 
 };
-
-
