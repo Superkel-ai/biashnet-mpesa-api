@@ -33,35 +33,45 @@ RESPONSIBILITY
 Converts the buyer's cart into a server-controlled
 marketplace order.
 
-FLOW:
+FLOW
 
-Android
-   ↓
+Android / Web
+      ↓
 checkoutController
-   ↓
+      ↓
 checkoutService
-   ↓
+      ↓
+Validate buyer
+      ↓
 Validate cart
-   ↓
-Read products from Firestore
-   ↓
-Verify prices
-   ↓
+      ↓
+Read authoritative products
+      ↓
+Verify product status
+      ↓
+Verify seller
+      ↓
+Verify price
+      ↓
 Verify stock
-   ↓
+      ↓
 Calculate commission
-   ↓
+      ↓
 Group sellers
-   ↓
-Create marketplace order
-   ↓
-PENDING_PAYMENT
-   ↓
+      ↓
+Create PENDING_PAYMENT order
+      ↓
 paymentInitiationService
-   ↓
-M-PESA STK
+      ↓
+M-PESA STK Push
+      ↓
+paymentCallbackService
+      ↓
+Payment confirmed
+      ↓
+Stock deduction / settlement
 
-IMPORTANT:
+IMPORTANT
 
 This service NEVER trusts:
 
@@ -73,20 +83,15 @@ This service NEVER trusts:
 
 buyerId must come from Firebase authentication.
 
-The order is NOT marked paid here.
+Checkout does NOT:
 
-The order is NOT marked completed here.
+- mark payment as successful
+- mark order as completed
+- deduct stock
+- release seller funds
+- calculate M-PESA results
 
-Stock is NOT reduced here.
-
-Payment completion is handled by:
-
-paymentCallbackService
-paymentService
-
-Seller funds are handled by:
-
-settlementService
+Those belong to the payment/settlement flow.
 =========================================================
 */
 
@@ -99,12 +104,9 @@ MONEY HELPER
 
 function money(value) {
 
-    const number =
-        Number(value);
+    const number = Number(value);
 
-    if (
-        !Number.isFinite(number)
-    ) {
+    if (!Number.isFinite(number)) {
 
         throw new Error(
             "Invalid monetary value."
@@ -121,10 +123,10 @@ function money(value) {
 
 /*
 =========================================================
-NORMALIZE PHONE NUMBER
+NORMALIZE KENYAN PHONE NUMBER
 =========================================================
 
-Supports common Kenyan formats:
+Supports:
 
 0712345678
 0112345678
@@ -148,9 +150,7 @@ function normalizeKenyanPhone(phone) {
             .replace(/-/g, "");
 
 
-    if (
-        value.startsWith("+")
-    ) {
+    if (value.startsWith("+")) {
 
         value =
             value.substring(1);
@@ -187,7 +187,7 @@ function normalizeKenyanPhone(phone) {
 
 /*
 =========================================================
-VALIDATE DELIVERY ADDRESS
+NORMALIZE DELIVERY ADDRESS
 =========================================================
 */
 
@@ -257,9 +257,7 @@ function normalizeDeliveryAddress(
     };
 
 
-    if (
-        !normalized.location
-    ) {
+    if (!normalized.location) {
 
         throw new Error(
             "Delivery location is required."
@@ -269,6 +267,331 @@ function normalizeDeliveryAddress(
 
 
     return normalized;
+
+}
+
+
+/*
+=========================================================
+PRODUCT STATUS VALIDATION
+=========================================================
+
+BIASHNET currently has products such as:
+
+status: "approved"
+isActive: true
+
+The service also supports the newer:
+
+status: "ACTIVE"
+
+Accepted:
+
+ACTIVE
+active
+approved
+APPROVED
+
+And:
+
+isActive === true
+
+Rejected:
+
+rejected
+disabled
+inactive
+deleted
+draft
+false isActive
+=========================================================
+*/
+
+function isProductAvailable(product) {
+
+    if (!product) {
+
+        return false;
+
+    }
+
+
+    /*
+    -----------------------------------------------------
+    isActive
+    -----------------------------------------------------
+    */
+
+    if (
+        product.isActive !== undefined &&
+        product.isActive !== true
+    ) {
+
+        return false;
+
+    }
+
+
+    /*
+    -----------------------------------------------------
+    STATUS
+    -----------------------------------------------------
+    */
+
+    if (
+        product.status === undefined ||
+        product.status === null ||
+        product.status === ""
+    ) {
+
+        /*
+        If there is no status field but isActive=true,
+        allow the product for backward compatibility.
+        */
+
+        return true;
+
+    }
+
+
+    const status =
+        String(
+            product.status
+        )
+            .trim()
+            .toLowerCase();
+
+
+    const allowedStatuses = [
+
+        "active",
+
+        "approved",
+
+    ];
+
+
+    return allowedStatuses.includes(
+        status
+    );
+
+}
+
+
+/*
+=========================================================
+GET SELLER ID
+=========================================================
+
+Current BIASHNET listings use:
+
+userId
+
+Newer marketplace documents may use:
+
+sellerId
+
+Prefer sellerId, then fall back to userId.
+=========================================================
+*/
+
+function getSellerId(product) {
+
+    const sellerId =
+        product.sellerId ||
+        product.userId ||
+        null;
+
+
+    if (!sellerId) {
+
+        return null;
+
+    }
+
+
+    return String(
+        sellerId
+    ).trim();
+
+}
+
+
+/*
+=========================================================
+GET PRODUCT IMAGE
+=========================================================
+
+Supports current BIASHNET structure:
+
+images: [
+    {
+        full,
+        thumb,
+        small,
+        original
+    }
+]
+
+Also supports:
+
+image
+thumbnail
+=========================================================
+*/
+
+function getProductImage(product) {
+
+    if (
+        product.image
+    ) {
+
+        return product.image;
+
+    }
+
+
+    if (
+        product.thumbnail
+    ) {
+
+        return product.thumbnail;
+
+    }
+
+
+    if (
+        Array.isArray(product.images) &&
+        product.images.length > 0
+    ) {
+
+        const firstImage =
+            product.images[0];
+
+
+        if (
+            firstImage &&
+            typeof firstImage === "object"
+        ) {
+
+            return (
+                firstImage.full ||
+                firstImage.thumb ||
+                firstImage.small ||
+                firstImage.original ||
+                null
+            );
+
+        }
+
+
+        if (
+            typeof firstImage === "string"
+        ) {
+
+            return firstImage;
+
+        }
+
+    }
+
+
+    return null;
+
+}
+
+
+/*
+=========================================================
+GET PRODUCT TITLE
+=========================================================
+*/
+
+function getProductTitle(product, listingId) {
+
+    return (
+        product.title ||
+        product.name ||
+        listingId
+    );
+
+}
+
+
+/*
+=========================================================
+GET PRODUCT PRICE
+=========================================================
+
+IMPORTANT:
+
+Checkout NEVER trusts the frontend price.
+
+Current BIASHNET product:
+
+price: 799
+
+That is authoritative.
+
+If a future pricing service introduces another
+authoritative price, that logic should be placed here.
+=========================================================
+*/
+
+function getProductPrice(product) {
+
+    const price =
+        Number(
+            product.price
+        );
+
+
+    if (
+        !Number.isFinite(price) ||
+        price <= 0
+    ) {
+
+        throw new Error(
+            "Product has an invalid price."
+        );
+
+    }
+
+
+    return money(
+        price
+    );
+
+}
+
+
+/*
+=========================================================
+GET PRODUCT STOCK
+=========================================================
+*/
+
+function getProductStock(product) {
+
+    const stock =
+        Number(
+            product.stock
+        );
+
+
+    if (
+        !Number.isInteger(stock) ||
+        stock < 0
+    ) {
+
+        throw new Error(
+            "Product has invalid stock."
+        );
+
+    }
+
+
+    return stock;
 
 }
 
@@ -326,9 +649,7 @@ async function createCheckout({
     }
 
 
-    if (
-        items.length > 50
-    ) {
+    if (items.length > 50) {
 
         throw new Error(
             "Too many items in one checkout."
@@ -363,15 +684,109 @@ async function createCheckout({
 
     /*
     =====================================================
-    DUPLICATE LISTING CHECK
+    IDEMPOTENCY KEY
     =====================================================
+    */
 
-    Prevent:
+    let cleanIdempotencyKey = null;
 
-    product A quantity 1
-    product A quantity 2
+    let idempotencyRef = null;
 
-    inside the same checkout.
+
+    if (idempotencyKey) {
+
+        cleanIdempotencyKey =
+            String(
+                idempotencyKey
+            ).trim();
+
+
+        if (
+            cleanIdempotencyKey.length < 8 ||
+            cleanIdempotencyKey.length > 128
+        ) {
+
+            throw new Error(
+                "Invalid idempotency key."
+            );
+
+        }
+
+
+        const safeKey =
+            cryptoSafeId(
+                cleanIdempotencyKey
+            );
+
+
+        idempotencyRef =
+            db
+                .collection(
+                    COLLECTIONS.PAYMENT_IDEMPOTENCY
+                )
+                .doc(
+                    `${buyerId}_${safeKey}`
+                );
+
+
+        /*
+        -------------------------------------------------
+        CHECK EXISTING CHECKOUT
+        -------------------------------------------------
+        */
+
+        const existing =
+            await idempotencyRef.get();
+
+
+        if (existing.exists) {
+
+            const existingData =
+                existing.data();
+
+
+            if (
+                existingData &&
+                existingData.orderId
+            ) {
+
+                const existingOrder =
+                    await db
+                        .collection(
+                            COLLECTIONS.ORDERS
+                        )
+                        .doc(
+                            existingData.orderId
+                        )
+                        .get();
+
+
+                if (existingOrder.exists) {
+
+                    return {
+
+                        success:
+                            true,
+
+                        alreadyCreated:
+                            true,
+
+                        ...existingOrder.data(),
+
+                    };
+
+                }
+
+            }
+
+        }
+
+    }
+
+
+    /*
+    =====================================================
+    DUPLICATE LISTING CHECK
     =====================================================
     */
 
@@ -408,7 +823,9 @@ async function createCheckout({
 
 
         if (
-            listingIds.has(listingId)
+            listingIds.has(
+                listingId
+            )
         ) {
 
             throw new Error(
@@ -443,20 +860,7 @@ async function createCheckout({
 
     /*
     =====================================================
-    SELLER BREAKDOWN
-    =====================================================
-
-    Example:
-
-    sellerA:
-        gross: 10000
-        commission: 1000
-        net: 9000
-
-    sellerB:
-        gross: 5000
-        commission: 500
-        net: 4500
+    SELLER MAP
     =====================================================
     */
 
@@ -466,7 +870,7 @@ async function createCheckout({
 
     /*
     =====================================================
-    PROCESS CART
+    PROCESS EACH CART ITEM
     =====================================================
     */
 
@@ -517,7 +921,9 @@ async function createCheckout({
                 .collection(
                     COLLECTIONS.PRODUCTS
                 )
-                .doc(listingId);
+                .doc(
+                    listingId
+                );
 
 
         const productSnapshot =
@@ -541,17 +947,18 @@ async function createCheckout({
 
         /*
         -------------------------------------------------
-        PRODUCT STATUS
+        PRODUCT AVAILABILITY
         -------------------------------------------------
         */
 
         if (
-            product.status &&
-            product.status !== "ACTIVE"
+            !isProductAvailable(
+                product
+            )
         ) {
 
             throw new Error(
-                `Product ${product.title || listingId} is not available.`
+                `Product ${getProductTitle(product, listingId)} is not available.`
             );
 
         }
@@ -564,7 +971,9 @@ async function createCheckout({
         */
 
         const sellerId =
-            product.sellerId;
+            getSellerId(
+                product
+            );
 
 
         if (!sellerId) {
@@ -597,57 +1006,24 @@ async function createCheckout({
         -------------------------------------------------
         PRICE
         -------------------------------------------------
-
-        NEVER use:
-
-        requestedItem.price
-
-        The price comes from Firestore.
-        -------------------------------------------------
         */
 
         const unitPrice =
-            Number(
-                product.price
+            getProductPrice(
+                product
             );
-
-
-        if (
-            !Number.isFinite(unitPrice) ||
-            unitPrice <= 0
-        ) {
-
-            throw new Error(
-                `Invalid price for product ${listingId}.`
-            );
-
-        }
 
 
         /*
         -------------------------------------------------
-        STOCK CHECK
+        STOCK
         -------------------------------------------------
         */
 
         const currentStock =
-            Number(
-                product.stock || 0
+            getProductStock(
+                product
             );
-
-
-        if (
-            !Number.isInteger(
-                currentStock
-            ) ||
-            currentStock < 0
-        ) {
-
-            throw new Error(
-                `Invalid stock for product ${listingId}.`
-            );
-
-        }
 
 
         if (
@@ -656,7 +1032,7 @@ async function createCheckout({
         ) {
 
             throw new Error(
-                `Insufficient stock for ${product.title || listingId}. Available: ${currentStock}.`
+                `Insufficient stock for ${getProductTitle(product, listingId)}. Available: ${currentStock}.`
             );
 
         }
@@ -678,12 +1054,6 @@ async function createCheckout({
         /*
         -------------------------------------------------
         COMMISSION
-        -------------------------------------------------
-
-        Commission is calculated NOW and stored as a
-        snapshot on the order.
-
-        Payment callback must NOT recalculate it.
         -------------------------------------------------
         */
 
@@ -721,9 +1091,20 @@ async function createCheckout({
 
         /*
         -------------------------------------------------
-        SAFETY CHECK
+        COMMISSION SAFETY
         -------------------------------------------------
         */
+
+        if (
+            commissionAmount < 0
+        ) {
+
+            throw new Error(
+                `Invalid commission for product ${listingId}.`
+            );
+
+        }
+
 
         if (
             sellerNet < 0
@@ -738,7 +1119,7 @@ async function createCheckout({
 
         /*
         -------------------------------------------------
-        ADD ORDER ITEM
+        ORDER ITEM
         -------------------------------------------------
         */
 
@@ -749,14 +1130,15 @@ async function createCheckout({
             sellerId,
 
             title:
-                product.title ||
-                product.name ||
-                "",
+                getProductTitle(
+                    product,
+                    listingId
+                ),
 
             image:
-                product.image ||
-                product.thumbnail ||
-                null,
+                getProductImage(
+                    product
+                ),
 
             category:
                 commission.category ||
@@ -772,7 +1154,8 @@ async function createCheckout({
 
             commissionRate:
                 Number(
-                    commission.commissionRate || 0
+                    commission.commissionRate ||
+                    0
                 ),
 
             commissionAmount,
@@ -829,6 +1212,14 @@ async function createCheckout({
 
                     sellerId,
 
+                    sellerName:
+                        product.sellerName ||
+                        null,
+
+                    sellerPhone:
+                        product.sellerPhone ||
+                        null,
+
                     grossAmount:
                         0,
 
@@ -884,10 +1275,9 @@ async function createCheckout({
     DELIVERY FEE
     =====================================================
 
-    Currently zero.
+    Currently KES 0.
 
-    Later this should come from a dedicated
-    delivery/pricing service.
+    Later replace with a dedicated delivery service.
     =====================================================
     */
 
@@ -945,6 +1335,19 @@ async function createCheckout({
 
     /*
     =====================================================
+    SELLER IDs
+    =====================================================
+    */
+
+    const sellerIds =
+        sellerBreakdown.map(
+            seller =>
+                seller.sellerId
+        );
+
+
+    /*
+    =====================================================
     ORDER ID
     =====================================================
     */
@@ -955,116 +1358,7 @@ async function createCheckout({
 
     /*
     =====================================================
-    IDEMPOTENCY
-    =====================================================
-
-    If the frontend supplies an idempotency key,
-    prevent accidental duplicate checkouts.
-
-    We use:
-
-    buyerId + idempotencyKey
-
-    as the document ID.
-    =====================================================
-    */
-
-    let idempotencyRef =
-        null;
-
-
-    if (idempotencyKey) {
-
-        const cleanKey =
-            String(
-                idempotencyKey
-            )
-                .trim();
-
-
-        if (
-            cleanKey.length < 8 ||
-            cleanKey.length > 128
-        ) {
-
-            throw new Error(
-                "Invalid idempotency key."
-            );
-
-        }
-
-
-        const safeKey =
-            cryptoSafeId(
-                cleanKey
-            );
-
-
-        idempotencyRef =
-            db
-                .collection(
-                    COLLECTIONS.PAYMENT_IDEMPOTENCY
-                )
-                .doc(
-                    `${buyerId}_${safeKey}`
-                );
-
-
-        const existing =
-            await idempotencyRef.get();
-
-
-        if (
-            existing.exists
-        ) {
-
-            const existingData =
-                existing.data();
-
-
-            if (
-                existingData.orderId
-            ) {
-
-                const existingOrder =
-                    await db
-                        .collection(
-                            COLLECTIONS.ORDERS
-                        )
-                        .doc(
-                            existingData.orderId
-                        )
-                        .get();
-
-
-                if (
-                    existingOrder.exists
-                ) {
-
-                    return {
-
-                        success:
-                            true,
-
-                        alreadyCreated:
-                            true,
-
-                        ...existingOrder.data(),
-
-                    };
-
-                }
-
-            }
-
-        }
-
-    }
-
-
-    /*
-    =====================================================
-    CREATE ORDER
+    ORDER REFERENCE
     =====================================================
     */
 
@@ -1073,7 +1367,9 @@ async function createCheckout({
             .collection(
                 COLLECTIONS.ORDERS
             )
-            .doc(orderId);
+            .doc(
+                orderId
+            );
 
 
     /*
@@ -1116,12 +1412,7 @@ async function createCheckout({
 
         sellerBreakdown,
 
-
-        sellerIds:
-            sellerBreakdown.map(
-                seller =>
-                    seller.sellerId
-            ),
+        sellerIds,
 
 
         /*
@@ -1141,7 +1432,6 @@ async function createCheckout({
 
         sellerGross:
             totalSellerGross,
-
 
         sellerNet:
             money(
@@ -1179,9 +1469,6 @@ async function createCheckout({
         -----------------------------------------------
         SELLER FUNDS
         -----------------------------------------------
-
-        Nothing is released at checkout.
-        -----------------------------------------------
         */
 
         fundsReceived:
@@ -1209,7 +1496,7 @@ async function createCheckout({
 
         /*
         -----------------------------------------------
-        BUYER INFORMATION
+        BUYER
         -----------------------------------------------
         */
 
@@ -1223,11 +1510,6 @@ async function createCheckout({
         /*
         -----------------------------------------------
         COMPLETION CODE
-        -----------------------------------------------
-
-        Generated ONLY after successful payment.
-
-        Plain code is NEVER stored.
         -----------------------------------------------
         */
 
@@ -1243,7 +1525,7 @@ async function createCheckout({
 
         /*
         -----------------------------------------------
-        ORDER COMPLETION
+        COMPLETION
         -----------------------------------------------
         */
 
@@ -1258,11 +1540,6 @@ async function createCheckout({
         -----------------------------------------------
         STOCK
         -----------------------------------------------
-
-        Stock has only been checked.
-
-        It will be reduced after confirmed payment.
-        -----------------------------------------------
         */
 
         stockStatus:
@@ -1276,11 +1553,7 @@ async function createCheckout({
         */
 
         checkoutIdempotencyKey:
-            idempotencyKey
-                ? String(
-                    idempotencyKey
-                ).trim()
-                : null,
+            cleanIdempotencyKey,
 
 
         /*
@@ -1300,7 +1573,15 @@ async function createCheckout({
 
     /*
     =====================================================
-    ATOMIC CREATION
+    ATOMIC ORDER CREATION
+    =====================================================
+
+    IMPORTANT
+
+    All transaction reads happen BEFORE writes.
+
+    Firestore requires transaction reads to happen before
+    transaction writes.
     =====================================================
     */
 
@@ -1309,7 +1590,7 @@ async function createCheckout({
 
             /*
             ---------------------------------------------
-            CHECK ORDER ID
+            READ ORDER
             ---------------------------------------------
             */
 
@@ -1318,6 +1599,34 @@ async function createCheckout({
                     orderRef
                 );
 
+
+            /*
+            ---------------------------------------------
+            READ IDEMPOTENCY
+            ---------------------------------------------
+            */
+
+            let existingKey =
+                null;
+
+
+            if (
+                idempotencyRef
+            ) {
+
+                existingKey =
+                    await transaction.get(
+                        idempotencyRef
+                    );
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            ORDER ID COLLISION
+            ---------------------------------------------
+            */
 
             if (
                 existingOrder.exists
@@ -1332,40 +1641,42 @@ async function createCheckout({
 
             /*
             ---------------------------------------------
-            IDEMPOTENCY CHECK
+            IDEMPOTENCY COLLISION
+            ---------------------------------------------
+            */
+
+            if (
+                existingKey &&
+                existingKey.exists
+            ) {
+
+                const existingData =
+                    existingKey.data();
+
+
+                if (
+                    existingData &&
+                    existingData.orderId
+                ) {
+
+                    throw new Error(
+                        "Checkout already exists for this idempotency key."
+                    );
+
+                }
+
+            }
+
+
+            /*
+            ---------------------------------------------
+            WRITE IDEMPOTENCY RECORD
             ---------------------------------------------
             */
 
             if (
                 idempotencyRef
             ) {
-
-                const existingKey =
-                    await transaction.get(
-                        idempotencyRef
-                    );
-
-
-                if (
-                    existingKey.exists
-                ) {
-
-                    const existingData =
-                        existingKey.data();
-
-
-                    if (
-                        existingData.orderId
-                    ) {
-
-                        throw new Error(
-                            "Checkout already exists for this idempotency key."
-                        );
-
-                    }
-
-                }
-
 
                 transaction.set(
                     idempotencyRef,
@@ -1432,11 +1743,7 @@ async function createCheckout({
 
         sellerBreakdown,
 
-        sellerIds:
-            sellerBreakdown.map(
-                seller =>
-                    seller.sellerId
-            ),
+        sellerIds,
 
         subtotal,
 
@@ -1471,11 +1778,10 @@ SAFE IDEMPOTENCY ID
 
 Firestore document IDs cannot contain "/".
 
-We therefore convert the client key into a safe
-deterministic identifier.
+We hash the client key into a deterministic safe ID.
 
-This does NOT replace cryptographic idempotency.
-It only makes the document ID safe.
+The actual idempotency protection comes from the
+Firestore document + transaction.
 =========================================================
 */
 
@@ -1493,7 +1799,11 @@ function cryptoSafeId(value) {
 
 /*
 =========================================================
-GET CHECKOUT / ORDER
+GET CHECKOUT
+=========================================================
+
+Returns an order only when the authenticated buyer
+owns the order.
 =========================================================
 */
 
@@ -1504,6 +1814,12 @@ async function getCheckout({
     buyerId,
 
 }) {
+
+    /*
+    =====================================================
+    VALIDATION
+    =====================================================
+    */
 
     if (!orderId) {
 
@@ -1523,17 +1839,31 @@ async function getCheckout({
     }
 
 
+    /*
+    =====================================================
+    GET ORDER
+    =====================================================
+    */
+
     const orderRef =
         db
             .collection(
                 COLLECTIONS.ORDERS
             )
-            .doc(orderId);
+            .doc(
+                orderId
+            );
 
 
     const snapshot =
         await orderRef.get();
 
+
+    /*
+    =====================================================
+    NOT FOUND
+    =====================================================
+    */
 
     if (
         !snapshot.exists
@@ -1550,7 +1880,7 @@ async function getCheckout({
 
     /*
     =====================================================
-    BUYER AUTHORIZATION
+    AUTHORIZATION
     =====================================================
     */
 
@@ -1565,6 +1895,12 @@ async function getCheckout({
 
     }
 
+
+    /*
+    =====================================================
+    RESPONSE
+    =====================================================
+    */
 
     return {
 
