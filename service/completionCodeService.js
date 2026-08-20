@@ -85,15 +85,7 @@ HASH COMPLETION CODE
 
 The plain code should NEVER be stored in Firestore.
 
-Example:
 
-Buyer receives:
-
-482913
-
-Database stores:
-
-hash(482913)
 
 =========================================================
 */
