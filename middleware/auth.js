@@ -2,23 +2,25 @@ const { admin } = require("../config/firebase");
 
 
 /*
-=========================================
+=========================================================
 FIREBASE AUTHENTICATION MIDDLEWARE
-=========================================
+=========================================================
 */
 
 async function requireAuth(req, res, next) {
 
     try {
 
-        /*
-        -----------------------------------------
-        GET AUTHORIZATION HEADER
-        -----------------------------------------
-        */
-
         const authHeader =
             req.headers.authorization;
+
+
+        console.log(
+            "🔐 Authorization header received:",
+            authHeader
+                ? "YES"
+                : "NO"
+        );
 
 
         if (!authHeader) {
@@ -35,15 +37,17 @@ async function requireAuth(req, res, next) {
         }
 
 
-        /*
-        -----------------------------------------
-        CHECK BEARER FORMAT
-        -----------------------------------------
-        */
-
         if (
             !authHeader.startsWith("Bearer ")
         ) {
+
+            console.error(
+                "❌ Invalid Authorization format:",
+                authHeader.substring(
+                    0,
+                    20
+                )
+            );
 
             return res.status(401).json({
 
@@ -57,14 +61,10 @@ async function requireAuth(req, res, next) {
         }
 
 
-        /*
-        -----------------------------------------
-        EXTRACT TOKEN
-        -----------------------------------------
-        */
-
         const token =
-            authHeader.split("Bearer ")[1];
+            authHeader.substring(
+                7
+            ).trim();
 
 
         if (!token) {
@@ -81,10 +81,16 @@ async function requireAuth(req, res, next) {
         }
 
 
+        console.log(
+            "🔐 Firebase token received. Length:",
+            token.length
+        );
+
+
         /*
-        -----------------------------------------
+        =====================================================
         VERIFY FIREBASE TOKEN
-        -----------------------------------------
+        =====================================================
         */
 
         const decodedToken =
@@ -94,25 +100,20 @@ async function requireAuth(req, res, next) {
 
 
         /*
-        -----------------------------------------
-        ATTACH USER TO REQUEST
-        -----------------------------------------
+        =====================================================
+        SUCCESS
+        =====================================================
         */
 
-        req.user = decodedToken;
+        console.log(
+            "✅ Firebase authentication successful:",
+            decodedToken.uid
+        );
 
 
-        /*
-        req.user now contains things such as:
+        req.user =
+            decodedToken;
 
-        req.user.uid
-        req.user.email
-        req.user.email_verified
-        req.user.name
-        etc.
-
-        -----------------------------------------
-        */
 
         next();
 
@@ -120,17 +121,37 @@ async function requireAuth(req, res, next) {
     } catch (error) {
 
         console.error(
-            "Firebase authentication error:",
-            error
+            "❌ Firebase authentication error"
         );
 
+        console.error(
+            "Code:",
+            error.code
+        );
+
+        console.error(
+            "Message:",
+            error.message
+        );
 
         return res.status(401).json({
 
             success: false,
 
             message:
-                "Invalid or expired authentication token."
+                "Invalid or expired authentication token.",
+
+            /*
+             * TEMPORARY DEBUG INFORMATION
+             *
+             * Remove this after debugging.
+             */
+
+            debug:
+                process.env.NODE_ENV !==
+                "production"
+                    ? error.message
+                    : undefined,
 
         });
 
