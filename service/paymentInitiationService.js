@@ -227,11 +227,18 @@ async function initiateMarketplacePayment({
       `📲 Sending STK Push: ${orderId} | KES ${amount} | ${phone}`
     );
 
-    mpesaResponse = await stkPush(
-      phone,
-      amount,
-      accountReference
-    );
+    mpesaResponse = await stkPush({
+
+    phone,
+
+    amount,
+
+    accountReference,
+
+    transactionDesc:
+        `BIASHNET ${accountReference}`,
+
+});
 
     console.log(
       "✅ Daraja response:",

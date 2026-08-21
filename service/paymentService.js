@@ -52,6 +52,7 @@ darajaService
 paymentInitiationService
 paymentCallbackService
 paymentController
+
 =========================================================
 */
 
@@ -71,14 +72,17 @@ async function createPayment({
   paymentMethod = "MPESA",
 }) {
 
-  if (!paymentId)
+  if (!paymentId) {
     throw new Error("Payment ID is required.");
+  }
 
-  if (!orderId)
+  if (!orderId) {
     throw new Error("Order ID is required.");
+  }
 
-  if (!buyerId)
+  if (!buyerId) {
     throw new Error("Buyer ID is required.");
+  }
 
   const numericAmount = Number(amount);
 
@@ -95,16 +99,31 @@ async function createPayment({
 
   const existing = await paymentRef.get();
 
+  /*
+  -------------------------------------------------------
+  EXISTING PAYMENT
+  -------------------------------------------------------
+  */
+
   if (existing.exists) {
+
     return {
       created: false,
       paymentId,
       ...existing.data(),
     };
+
   }
 
   const now =
     FieldValue.serverTimestamp();
+
+
+  /*
+  -------------------------------------------------------
+  CREATE PAYMENT DOCUMENT
+  -------------------------------------------------------
+  */
 
   await paymentRef.set({
 
@@ -133,19 +152,26 @@ async function createPayment({
     status:
       PAYMENT_STATUS.PENDING,
 
+    /*
+    M-PESA provider information
+    */
+
     providerTransactionId:
       null,
 
-    checkoutRequestId:
+    checkoutRequestID:
       null,
 
-    merchantRequestId:
+    merchantRequestID:
       null,
 
     resultCode:
       null,
 
     resultDescription:
+      null,
+
+    providerResponse:
       null,
 
     createdAt:
@@ -156,10 +182,15 @@ async function createPayment({
 
   });
 
+
   return {
+
     created: true,
+
     paymentId,
+
   };
+
 }
 
 
@@ -171,78 +202,97 @@ GET PAYMENT
 
 async function getPayment(paymentId) {
 
-  if (!paymentId)
-    throw new Error("Payment ID is required.");
+  if (!paymentId) {
+    throw new Error(
+      "Payment ID is required."
+    );
+  }
 
   const snap = await db
     .collection(COLLECTIONS.PAYMENTS)
     .doc(paymentId)
     .get();
 
-  if (!snap.exists)
+
+  if (!snap.exists) {
     return null;
+  }
+
 
   return {
-    paymentId: snap.id,
+
+    paymentId:
+      snap.id,
+
     ...snap.data(),
+
   };
+
 }
 
 
 /*
 =========================================================
-GET PAYMENT BY CHECKOUT REQUEST
+GET PAYMENT BY CHECKOUT REQUEST ID
+=========================================================
+
+IMPORTANT:
+
+Firestore field:
+
+checkoutRequestID
+
+This must match:
+
+paymentInitiationService
+paymentCallbackService
+paymentService
+
 =========================================================
 */
 
-async function getPaymentByCheckoutRequestId(
-  checkoutRequestId
+async function getPaymentByCheckoutRequestID(
+  checkoutRequestID
 ) {
 
-  if (!checkoutRequestId)
+  if (!checkoutRequestID) {
+
     throw new Error(
       "CheckoutRequestID is required."
     );
 
-  let snapshot = await db
+  }
+
+
+  const snapshot = await db
     .collection(COLLECTIONS.PAYMENTS)
     .where(
-      "checkoutRequestId",
+      "checkoutRequestID",
       "==",
-      checkoutRequestId
+      checkoutRequestID
     )
     .limit(1)
     .get();
 
-  /*
-  -------------------------------------------------------
-  BACKWARD COMPATIBILITY
-  -------------------------------------------------------
-  */
 
   if (snapshot.empty) {
-
-    snapshot = await db
-      .collection(COLLECTIONS.PAYMENTS)
-      .where(
-        "checkoutRequestID",
-        "==",
-        checkoutRequestId
-      )
-      .limit(1)
-      .get();
-
+    return null;
   }
 
-  if (snapshot.empty)
-    return null;
 
-  const doc = snapshot.docs[0];
+  const doc =
+    snapshot.docs[0];
+
 
   return {
-    paymentId: doc.id,
+
+    paymentId:
+      doc.id,
+
     ...doc.data(),
+
   };
+
 }
 
 
@@ -250,32 +300,54 @@ async function getPaymentByCheckoutRequestId(
 =========================================================
 ATTACH M-PESA REQUEST
 =========================================================
+
+Called after Daraja returns:
+
+MerchantRequestID
+CheckoutRequestID
+
+=========================================================
 */
 
 async function attachMpesaRequest({
+
   paymentId,
-  checkoutRequestId,
-  merchantRequestId,
+
+  checkoutRequestID,
+
+  merchantRequestID,
+
 }) {
 
-  if (!paymentId)
-    throw new Error("Payment ID is required.");
+  if (!paymentId) {
 
-  if (!checkoutRequestId)
+    throw new Error(
+      "Payment ID is required."
+    );
+
+  }
+
+
+  if (!checkoutRequestID) {
+
     throw new Error(
       "CheckoutRequestID is required."
     );
+
+  }
+
 
   const paymentRef = db
     .collection(COLLECTIONS.PAYMENTS)
     .doc(paymentId);
 
+
   await paymentRef.update({
 
-    checkoutRequestId,
+    checkoutRequestID,
 
-    merchantRequestId:
-      merchantRequestId || null,
+    merchantRequestID:
+      merchantRequestID || null,
 
     status:
       PAYMENT_STATUS.PENDING,
@@ -285,7 +357,9 @@ async function attachMpesaRequest({
 
   });
 
+
   return getPayment(paymentId);
+
 }
 
 
@@ -296,8 +370,11 @@ VALIDATE PAYMENT AMOUNT
 */
 
 function validatePaymentAmount({
+
   expectedAmount,
+
   receivedAmount,
+
 }) {
 
   const expected =
@@ -306,26 +383,36 @@ function validatePaymentAmount({
   const received =
     Number(receivedAmount);
 
+
   if (
     !Number.isFinite(expected) ||
     !Number.isFinite(received)
   ) {
+
     throw new Error(
       "Invalid payment amount."
     );
+
   }
 
+
   if (
-    Math.abs(expected - received) > 0.01
+    Math.abs(
+      expected - received
+    ) > 0.01
   ) {
+
     throw new Error(
       `Payment amount mismatch. ` +
       `Expected KES ${expected}, ` +
       `received KES ${received}.`
     );
+
   }
 
+
   return true;
+
 }
 
 
@@ -334,23 +421,26 @@ function validatePaymentAmount({
 PROCESS MARKETPLACE PAYMENT
 =========================================================
 
-THIS IS THE MAIN CALLBACK PROCESSOR.
+MAIN SUCCESSFUL PAYMENT PROCESSOR.
 
 Called after Safaricom confirms:
 
 ResultCode === 0
 
-It atomically:
+It:
 
-1. Reads payment
-2. Reads order
-3. Reads products
-4. Validates payment
-5. Deducts stock
-6. Completes payment
-7. Marks order PAID
-8. Holds seller funds
-9. Prevents duplicate processing
+1. Reads order
+2. Reads payment
+3. Prevents duplicate processing
+4. Validates buyer
+5. Validates amount
+6. Reads products
+7. Validates stock
+8. Deducts stock
+9. Completes payment
+10. Marks order PAID
+11. Holds seller funds
+12. Prevents duplicate callbacks
 
 =========================================================
 */
@@ -369,56 +459,99 @@ async function processMarketplacePayment({
 
 }) {
 
-  if (!orderId)
-    throw new Error("Order ID is required.");
+  if (!orderId) {
 
-  if (!providerTransactionId)
+    throw new Error(
+      "Order ID is required."
+    );
+
+  }
+
+
+  if (!providerTransactionId) {
+
     throw new Error(
       "M-PESA receipt number is required."
     );
+
+  }
+
 
   const orderRef = db
     .collection(COLLECTIONS.ORDERS)
     .doc(orderId);
 
+
   let processedResult;
+
 
   await db.runTransaction(
     async transaction => {
 
+
       /*
       ===================================================
-      READ PAYMENT THROUGH ORDER
+      1. READ ORDER
       ===================================================
       */
 
       const orderSnap =
-        await transaction.get(orderRef);
+        await transaction.get(
+          orderRef
+        );
 
-      if (!orderSnap.exists)
+
+      if (!orderSnap.exists) {
+
         throw new Error(
           "Marketplace order not found."
         );
 
+      }
+
+
       const order =
         orderSnap.data();
 
-      if (!order.paymentId)
+
+      /*
+      ===================================================
+      2. GET PAYMENT ID FROM ORDER
+      ===================================================
+      */
+
+      if (!order.paymentId) {
+
         throw new Error(
           "Order has no payment record."
         );
 
+      }
+
+
       const paymentRef = db
-        .collection(COLLECTIONS.PAYMENTS)
-        .doc(order.paymentId);
+        .collection(
+          COLLECTIONS.PAYMENTS
+        )
+        .doc(
+          order.paymentId
+        );
+
 
       const paymentSnap =
-        await transaction.get(paymentRef);
+        await transaction.get(
+          paymentRef
+        );
 
-      if (!paymentSnap.exists)
+
+      if (!paymentSnap.exists) {
+
         throw new Error(
           "Marketplace payment not found."
         );
+
+      }
+
 
       const payment =
         paymentSnap.data();
@@ -426,7 +559,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      DUPLICATE PROTECTION
+      3. DUPLICATE PROTECTION
       ===================================================
       */
 
@@ -436,13 +569,23 @@ async function processMarketplacePayment({
       ) {
 
         processedResult = {
-          alreadyProcessed: true,
-          paymentId: payment.paymentId,
+
+          alreadyProcessed:
+            true,
+
+          paymentId:
+            payment.paymentId,
+
           orderId,
-          amount: payment.amount,
+
+          amount:
+            payment.amount,
+
           providerTransactionId:
             payment.providerTransactionId,
+
         };
+
 
         return;
 
@@ -451,30 +594,37 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      BUYER / ORDER VALIDATION
+      4. BUYER / ORDER VALIDATION
       ===================================================
       */
 
       if (
-        payment.orderId !== orderId
+        payment.orderId !==
+        orderId
       ) {
+
         throw new Error(
           "Payment does not belong to this order."
         );
+
       }
 
+
       if (
-        payment.buyerId !== order.buyerId
+        payment.buyerId !==
+        order.buyerId
       ) {
+
         throw new Error(
           "Payment buyer does not match order buyer."
         );
+
       }
 
 
       /*
       ===================================================
-      AMOUNT VALIDATION
+      5. AMOUNT VALIDATION
       ===================================================
       */
 
@@ -491,52 +641,74 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      PAYMENT METHOD
+      6. PAYMENT METHOD
       ===================================================
       */
 
       if (
         String(paymentMethod)
-          .toUpperCase() !== "MPESA"
+          .toUpperCase() !==
+        "MPESA"
       ) {
+
         throw new Error(
           "Unsupported payment method."
         );
+
       }
 
 
       /*
       ===================================================
-      STOCK READS
+      7. READ PRODUCTS
       ===================================================
 
-      ALL PRODUCT READS HAPPEN BEFORE WRITES.
+      ALL READS BEFORE WRITES.
+
       ===================================================
       */
 
       const productReads = [];
+
 
       for (
         const item of order.items || []
       ) {
 
         const productRef = db
-          .collection(COLLECTIONS.PRODUCTS)
-          .doc(item.listingId);
+          .collection(
+            COLLECTIONS.PRODUCTS
+          )
+          .doc(
+            item.listingId
+          );
+
 
         const productSnap =
-          await transaction.get(productRef);
+          await transaction.get(
+            productRef
+          );
+
 
         if (!productSnap.exists) {
+
           throw new Error(
             `Product ${item.listingId} no longer exists.`
           );
+
         }
 
+
         productReads.push({
-          ref: productRef,
-          snap: productSnap,
+
+          ref:
+            productRef,
+
+          snap:
+            productSnap,
+
           item,
+
         });
 
       }
@@ -544,7 +716,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      STOCK VALIDATION
+      8. VALIDATE STOCK
       ===================================================
       */
 
@@ -555,27 +727,49 @@ async function processMarketplacePayment({
         const data =
           product.snap.data();
 
+
         const stock =
           Number(data.stock);
 
+
         const quantity =
-          Number(product.item.quantity);
+          Number(
+            product.item.quantity
+          );
+
 
         if (
           !Number.isInteger(stock) ||
           stock < 0
         ) {
+
           throw new Error(
             `Invalid stock for ${product.item.listingId}.`
           );
+
         }
+
+
+        if (
+          !Number.isInteger(quantity) ||
+          quantity <= 0
+        ) {
+
+          throw new Error(
+            `Invalid quantity for ${product.item.listingId}.`
+          );
+
+        }
+
 
         if (
           stock < quantity
         ) {
+
           throw new Error(
             `Insufficient stock for ${product.item.title}.`
           );
+
         }
 
       }
@@ -583,7 +777,7 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      STOCK DEDUCTION
+      9. DEDUCT STOCK
       ===================================================
       */
 
@@ -594,11 +788,17 @@ async function processMarketplacePayment({
         const data =
           product.snap.data();
 
+
         const quantity =
-          Number(product.item.quantity);
+          Number(
+            product.item.quantity
+          );
+
 
         transaction.update(
+
           product.ref,
+
           {
 
             stock:
@@ -609,6 +809,7 @@ async function processMarketplacePayment({
               FieldValue.serverTimestamp(),
 
           }
+
         );
 
       }
@@ -616,36 +817,42 @@ async function processMarketplacePayment({
 
       /*
       ===================================================
-      HOLD SELLER FUNDS
+      10. HOLD SELLER FUNDS
       ===================================================
       */
 
       const sellerBreakdown =
+
         (order.sellerBreakdown || [])
-          .map(seller => ({
+          .map(
+            seller => ({
 
-            ...seller,
+              ...seller,
 
-            sellerPaymentStatus:
-              SELLER_PAYMENT_STATUS.HELD,
+              sellerPaymentStatus:
+                SELLER_PAYMENT_STATUS.HELD,
 
-            payoutStatus:
-              PAYOUT_STATUS.NOT_RELEASED,
+              payoutStatus:
+                PAYOUT_STATUS.NOT_RELEASED,
 
-          }));
+            })
+          );
 
 
       /*
       ===================================================
-      COMPLETE PAYMENT
+      11. COMPLETE PAYMENT
       ===================================================
       */
 
       const now =
         FieldValue.serverTimestamp();
 
+
       transaction.update(
+
         paymentRef,
+
         {
 
           status:
@@ -668,17 +875,20 @@ async function processMarketplacePayment({
             now,
 
         }
+
       );
 
 
       /*
       ===================================================
-      UPDATE ORDER
+      12. UPDATE ORDER
       ===================================================
       */
 
       transaction.update(
+
         orderRef,
+
         {
 
           paymentStatus:
@@ -716,14 +926,23 @@ async function processMarketplacePayment({
             now,
 
         }
+
       );
 
 
+      /*
+      ===================================================
+      13. RETURN RESULT
+      ===================================================
+      */
+
       processedResult = {
 
-        success: true,
+        success:
+          true,
 
-        alreadyProcessed: false,
+        alreadyProcessed:
+          false,
 
         paymentId:
           payment.paymentId,
@@ -743,7 +962,9 @@ async function processMarketplacePayment({
     }
   );
 
+
   return processedResult;
+
 }
 
 
@@ -754,7 +975,7 @@ MARK PAYMENT SUCCESSFUL
 
 Compatibility wrapper.
 
-Marketplace callbacks should use:
+Prefer:
 
 processMarketplacePayment()
 
@@ -762,21 +983,36 @@ processMarketplacePayment()
 */
 
 async function markPaymentSuccessful({
+
   paymentId,
+
   providerTransactionId,
+
   amount,
+
   resultCode = 0,
+
   resultDescription = "",
+
   providerResponse = null,
+
 }) {
 
-  const payment =
-    await getPayment(paymentId);
 
-  if (!payment)
+  const payment =
+    await getPayment(
+      paymentId
+    );
+
+
+  if (!payment) {
+
     throw new Error(
       "Payment not found."
     );
+
+  }
+
 
   return processMarketplacePayment({
 
@@ -791,14 +1027,19 @@ async function markPaymentSuccessful({
       payment.paymentMethod,
 
     providerResponse: {
+
       ...providerResponse,
+
       ResultCode:
         resultCode,
+
       ResultDesc:
         resultDescription,
+
     },
 
   });
+
 }
 
 
@@ -820,38 +1061,73 @@ async function markPaymentFailed({
 
 }) {
 
-  if (!paymentId)
+  if (!paymentId) {
+
     throw new Error(
       "Payment ID is required."
     );
 
+  }
+
+
   const paymentRef = db
-    .collection(COLLECTIONS.PAYMENTS)
-    .doc(paymentId);
+    .collection(
+      COLLECTIONS.PAYMENTS
+    )
+    .doc(
+      paymentId
+    );
+
 
   const paymentSnap =
     await paymentRef.get();
 
-  if (!paymentSnap.exists)
+
+  if (!paymentSnap.exists) {
+
     throw new Error(
       "Payment not found."
     );
 
+  }
+
+
   const payment =
     paymentSnap.data();
+
+
+  /*
+  =======================================================
+  ALREADY COMPLETED
+  =======================================================
+  */
 
   if (
     payment.status ===
     PAYMENT_STATUS.COMPLETED
   ) {
+
     return {
-      alreadyCompleted: true,
+
+      alreadyCompleted:
+        true,
+
       paymentId,
+
     };
+
   }
+
 
   const now =
     FieldValue.serverTimestamp();
+
+
+  /*
+  =======================================================
+  UPDATE PAYMENT AS FAILED
+  =======================================================
+  */
 
   await paymentRef.update({
 
@@ -874,24 +1150,31 @@ async function markPaymentFailed({
 
 
   /*
-  -------------------------------------------------------
-  ORDER
-  -------------------------------------------------------
+  =======================================================
+  UPDATE ORDER
+  =======================================================
   */
 
   if (payment.orderId) {
 
     const orderRef = db
-      .collection(COLLECTIONS.ORDERS)
-      .doc(payment.orderId);
+      .collection(
+        COLLECTIONS.ORDERS
+      )
+      .doc(
+        payment.orderId
+      );
+
 
     const orderSnap =
       await orderRef.get();
+
 
     if (orderSnap.exists) {
 
       const order =
         orderSnap.data();
+
 
       if (
         order.paymentStatus !==
@@ -917,9 +1200,11 @@ async function markPaymentFailed({
 
   }
 
+
   return {
 
-    success: true,
+    success:
+      true,
 
     paymentId,
 
@@ -930,6 +1215,7 @@ async function markPaymentFailed({
       PAYMENT_STATUS.FAILED,
 
   };
+
 }
 
 
@@ -940,13 +1226,19 @@ CALCULATE PAYMENT BREAKDOWN
 */
 
 async function calculatePaymentBreakdown({
+
   amount,
+
   category,
+
 }) {
 
   return calculateCommission({
+
     amount,
+
     category,
+
   });
 
 }
@@ -964,7 +1256,7 @@ module.exports = {
 
   getPayment,
 
-  getPaymentByCheckoutRequestId,
+  getPaymentByCheckoutRequestID,
 
   attachMpesaRequest,
 

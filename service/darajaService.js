@@ -2,8 +2,10 @@ const axios =
     require("axios");
 
 const {
-    DARajaConfig
-} = require("../config/daraja");
+    DARajaConfig,
+    validateDarajaConfig,
+} =
+    require("../config/daraja");
 
 
 let cachedToken = null;
@@ -17,6 +19,8 @@ GET ACCESS TOKEN
 */
 
 async function getAccessToken() {
+
+    validateDarajaConfig();
 
     const now =
         Date.now();
@@ -34,50 +38,79 @@ async function getAccessToken() {
 
     const auth =
         Buffer.from(
-            `${DARajaConfig.consumerKey}:${DARajaConfig.consumerSecret}`
+            `${DARajaConfig.consumerKey}:` +
+            `${DARajaConfig.consumerSecret}`
         ).toString("base64");
 
 
-    const response =
-        await axios.get(
-            DARajaConfig.oauthUrl,
-            {
+    try {
 
-                headers: {
+        const response =
+            await axios.get(
+                DARajaConfig.oauthUrl,
+                {
+                    headers: {
 
-                    Authorization:
-                        `Basic ${auth}`,
+                        Authorization:
+                            `Basic ${auth}`,
 
-                },
+                    },
 
-            }
+                    timeout: 15000,
+
+                }
+            );
+
+
+        const token =
+            response.data?.access_token;
+
+
+        if (!token) {
+
+            throw new Error(
+                "M-PESA access token was not returned."
+            );
+
+        }
+
+
+        cachedToken =
+            token;
+
+
+        const expiresIn =
+            Number(
+                response.data?.expires_in ||
+                3599
+            );
+
+
+        tokenExpiresAt =
+            now +
+            Math.max(
+                60,
+                expiresIn - 60
+            ) * 1000;
+
+
+        return cachedToken;
+
+    } catch (error) {
+
+        console.error(
+            "❌ M-PESA OAuth error:",
+            error.response?.data ||
+            error.message
         );
 
 
-    cachedToken =
-        response.data.access_token;
-
-
-    /*
-    Leave a safety margin before expiry.
-    */
-
-    const expiresIn =
-        Number(
-            response.data.expires_in ||
-            3599
+        throw new Error(
+            error.response?.data?.errorMessage ||
+            "Unable to obtain M-PESA access token."
         );
 
-
-    tokenExpiresAt =
-        now +
-        Math.max(
-            60,
-            expiresIn - 60
-        ) * 1000;
-
-
-    return cachedToken;
+    }
 
 }
 
@@ -108,12 +141,24 @@ function normalizePhone(phone) {
 
 
     if (
-        value.startsWith("0")
+        value.startsWith("07") ||
+        value.startsWith("01")
     ) {
 
         value =
             "254" +
             value.substring(1);
+
+    }
+
+
+    if (
+        !/^254[71]\d{8}$/.test(value)
+    ) {
+
+        throw new Error(
+            "Invalid Kenyan M-PESA phone number."
+        );
 
     }
 
@@ -165,7 +210,8 @@ function getTimestamp() {
 
 
     return (
-        `${yyyy}${MM}${dd}${HH}${mm}${ss}`
+        `${yyyy}${MM}${dd}` +
+        `${HH}${mm}${ss}`
     );
 
 }
@@ -189,12 +235,28 @@ async function stkPush({
 
 }) {
 
-    const token =
-        await getAccessToken();
-
-
     const normalizedPhone =
         normalizePhone(phone);
+
+
+    const numericAmount =
+        Number(amount);
+
+
+    if (
+        !Number.isFinite(numericAmount) ||
+        numericAmount <= 0
+    ) {
+
+        throw new Error(
+            "Invalid M-PESA payment amount."
+        );
+
+    }
+
+
+    const token =
+        await getAccessToken();
 
 
     const timestamp =
@@ -209,64 +271,103 @@ async function stkPush({
         ).toString("base64");
 
 
-    const response =
-        await axios.post(
+    console.log(
+        "📲 Sending STK Push:",
+        {
+            phone:
+                normalizedPhone,
 
-            DARajaConfig.stkPushUrl,
+            amount:
+                numericAmount,
 
-            {
+            accountReference,
 
-                BusinessShortCode:
-                    DARajaConfig.shortCode,
+        }
+    );
 
-                Password:
-                    password,
 
-                Timestamp:
-                    timestamp,
+    try {
 
-                TransactionType:
-                    "CustomerPayBillOnline",
+        const response =
+            await axios.post(
 
-                Amount:
-                    Number(amount),
+                DARajaConfig.stkPushUrl,
 
-                PartyA:
-                    normalizedPhone,
+                {
 
-                PartyB:
-                    DARajaConfig.shortCode,
+                    BusinessShortCode:
+                        DARajaConfig.shortCode,
 
-                PhoneNumber:
-                    normalizedPhone,
+                    Password:
+                        password,
 
-                CallBackURL:
-                    DARajaConfig.callbackUrl,
+                    Timestamp:
+                        timestamp,
 
-                AccountReference:
-                    accountReference,
+                    TransactionType:
+                        "CustomerPayBillOnline",
 
-                TransactionDesc:
-                    transactionDesc ||
-                    `BIASHNET ${accountReference}`,
+                    Amount:
+                        numericAmount,
 
-            },
+                    PartyA:
+                        normalizedPhone,
 
-            {
+                    PartyB:
+                        DARajaConfig.shortCode,
 
-                headers: {
+                    PhoneNumber:
+                        normalizedPhone,
 
-                    Authorization:
-                        `Bearer ${token}`,
+                    CallBackURL:
+                        DARajaConfig.callbackUrl,
+
+                    AccountReference:
+                        accountReference,
+
+                    TransactionDesc:
+                        transactionDesc ||
+                        `BIASHNET ${accountReference}`,
 
                 },
 
-            }
+                {
 
+                    headers: {
+
+                        Authorization:
+                            `Bearer ${token}`,
+
+                        "Content-Type":
+                            "application/json",
+
+                    },
+
+                    timeout: 20000,
+
+                }
+
+            );
+
+
+        return response.data;
+
+    } catch (error) {
+
+        console.error(
+            "❌ STK Push error:",
+            error.response?.data ||
+            error.message
         );
 
 
-    return response.data;
+        throw new Error(
+            error.response?.data?.errorMessage ||
+            error.response?.data?.errorCode ||
+            "Failed to send M-PESA STK Push."
+        );
+
+    }
 
 }
 

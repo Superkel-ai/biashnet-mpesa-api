@@ -897,9 +897,9 @@ async function findMarketplacePayment(
         COLLECTIONS.PAYMENTS
       )
       .where(
-        "checkoutRequestId",
+        "checkoutRequestID",
         "==",
-        checkoutRequestId
+        checkoutRequestID
       )
       .limit(1)
       .get();
@@ -921,9 +921,9 @@ async function findMarketplacePayment(
         COLLECTIONS.PAYMENTS
       )
       .where(
-        "checkoutRequestID",
+        "checkoutRequestId",
         "==",
-        checkoutRequestId
+        checkoutRequestID
       )
       .limit(1)
       .get();
