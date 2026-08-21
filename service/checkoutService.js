@@ -270,44 +270,62 @@ function normalizeDeliveryAddress(
 
 }
 
-
 /*
 =========================================================
-PRODUCT STATUS VALIDATION
+PRODUCT AVAILABILITY VALIDATION
 =========================================================
 
-BIASHNET currently has products such as:
+BIASHNET PRODUCT SCHEMA
 
-status: "approved"
-isActive: true
+Current marketplace products use:
 
-The service also supports the newer:
+    status: "approved"
+    isActive: true
 
-status: "ACTIVE"
+Newer products may use:
 
-Accepted:
+    status: "ACTIVE"
+    isActive: true
 
-ACTIVE
-active
-approved
-APPROVED
+CHECKOUT REQUIREMENTS
 
-And:
+A product is available for purchase when:
 
-isActive === true
+    1. isActive is true
+    AND
+    2. status is approved/active
 
-Rejected:
+Accepted statuses:
 
-rejected
-disabled
-inactive
-deleted
-draft
-false isActive
+    approved
+    active
+    APPROVED
+    ACTIVE
+
+Rejected statuses include:
+
+    rejected
+    disabled
+    inactive
+    deleted
+    draft
+
+A product with:
+
+    isActive === false
+
+is ALWAYS unavailable.
+
 =========================================================
 */
 
 function isProductAvailable(product) {
+
+    /*
+    =====================================================
+    BASIC VALIDATION
+    =====================================================
+    */
 
     if (!product) {
 
@@ -317,13 +335,19 @@ function isProductAvailable(product) {
 
 
     /*
-    -----------------------------------------------------
+    =====================================================
     isActive
-    -----------------------------------------------------
+    =====================================================
+
+    Your existing products have:
+
+        isActive: true
+
+    This must be true for a product to be purchasable.
+    =====================================================
     */
 
     if (
-        product.isActive !== undefined &&
         product.isActive !== true
     ) {
 
@@ -333,50 +357,45 @@ function isProductAvailable(product) {
 
 
     /*
-    -----------------------------------------------------
+    =====================================================
     STATUS
-    -----------------------------------------------------
+    =====================================================
     */
-
-    if (
-        product.status === undefined ||
-        product.status === null ||
-        product.status === ""
-    ) {
-
-        /*
-        If there is no status field but isActive=true,
-        allow the product for backward compatibility.
-        */
-
-        return true;
-
-    }
-
 
     const status =
         String(
-            product.status
+            product.status || ""
         )
             .trim()
             .toLowerCase();
 
 
-    const allowedStatuses = [
+    /*
+    =====================================================
+    ACCEPTED MARKETPLACE STATUSES
+    =====================================================
+    */
 
-        "active",
+    const allowedStatuses = [
 
         "approved",
 
+        "active",
+
     ];
 
+
+    /*
+    =====================================================
+    FINAL STATUS CHECK
+    =====================================================
+    */
 
     return allowedStatuses.includes(
         status
     );
 
 }
-
 
 /*
 =========================================================
@@ -1269,83 +1288,178 @@ async function createCheckout({
 
     }
 
+/*
+=========================================================
+DELIVERY FEE
+=========================================================
 
-    /*
-    =====================================================
-    DELIVERY FEE
-    =====================================================
+Currently KES 0.
 
-    Currently KES 0.
+The delivery fee is part of the buyer's total but is
+NOT seller revenue and is NOT commissionable.
 
-    Later replace with a dedicated delivery service.
-    =====================================================
-    */
+Later this can be replaced by a dedicated delivery
+pricing service.
+=========================================================
+*/
 
-    const deliveryFee =
-        0;
-
-
-    /*
-    =====================================================
-    BUYER TOTAL
-    =====================================================
-    */
-
-    const buyerTotal =
-        money(
-            subtotal +
-            deliveryFee
-        );
+const deliveryFee = 0;
 
 
-    /*
-    =====================================================
-    FINANCIAL CONSISTENCY CHECK
-    =====================================================
-    */
+/*
+=========================================================
+BUYER TOTAL
+=========================================================
+*/
 
-    if (
-        money(
-            totalCommission +
-            totalSellerGross
-        ) !==
-        money(
-            buyerTotal
+const buyerTotal =
+    money(
+        subtotal +
+        deliveryFee
+    );
+
+
+/*
+=========================================================
+FINAL SELLER NET
+=========================================================
+*/
+
+const sellerNet =
+    money(
+        totalSellerGross -
+        totalCommission
+    );
+
+
+/*
+=========================================================
+COMMISSION SAFETY
+=========================================================
+
+Commission must never exceed the seller's gross amount.
+=========================================================
+*/
+
+if (
+    totalCommission < 0 ||
+    totalCommission > totalSellerGross
+) {
+
+    throw new Error(
+        "Invalid checkout commission calculation."
+    );
+
+}
+
+
+/*
+=========================================================
+FINANCIAL CONSISTENCY
+=========================================================
+
+The marketplace financial model is:
+
+buyerTotal
+    =
+sellerNet
+    +
+BIASHNET commission
+    +
+deliveryFee
+
+And:
+
+sellerNet
+    =
+sellerGross
+    -
+commission
+=========================================================
+*/
+
+const financialTotal =
+    money(
+        sellerNet +
+        totalCommission +
+        deliveryFee
+    );
+
+
+if (
+    financialTotal !==
+    buyerTotal
+) {
+
+    throw new Error(
+        `Checkout financial calculation mismatch. Buyer total: ${buyerTotal}, Financial total: ${financialTotal}.`
+    );
+
+}
+
+
+/*
+=========================================================
+SELLER BREAKDOWN
+=========================================================
+*/
+
+const sellerBreakdown =
+    Array.from(
+        sellerMap.values()
+    );
+
+
+/*
+=========================================================
+SELLER BREAKDOWN CONSISTENCY
+=========================================================
+
+The sum of individual seller net amounts must equal
+the overall seller net.
+=========================================================
+*/
+
+const sellerBreakdownNet =
+    money(
+        sellerBreakdown.reduce(
+            (
+                total,
+                seller
+            ) =>
+                total +
+                Number(
+                    seller.sellerNet || 0
+                ),
+            0
         )
-    ) {
-
-        throw new Error(
-            "Checkout financial calculation mismatch."
-        );
-
-    }
+    );
 
 
-    /*
-    =====================================================
-    SELLER BREAKDOWN ARRAY
-    =====================================================
-    */
+if (
+    sellerBreakdownNet !==
+    sellerNet
+) {
 
-    const sellerBreakdown =
-        Array.from(
-            sellerMap.values()
-        );
+    throw new Error(
+        `Seller settlement calculation mismatch. Expected: ${sellerNet}, calculated: ${sellerBreakdownNet}.`
+    );
 
-
-    /*
-    =====================================================
-    SELLER IDs
-    =====================================================
-    */
-
-    const sellerIds =
-        sellerBreakdown.map(
-            seller =>
-                seller.sellerId
-        );
+}
 
 
+/*
+=========================================================
+SELLER IDs
+=========================================================
+*/
+
+const sellerIds =
+    sellerBreakdown.map(
+        seller =>
+            seller.sellerId
+    );
+    
     /*
     =====================================================
     ORDER ID
@@ -1433,11 +1547,7 @@ async function createCheckout({
         sellerGross:
             totalSellerGross,
 
-        sellerNet:
-            money(
-                totalSellerGross -
-                totalCommission
-            ),
+        sellerNet,
 
 
         /*
@@ -1757,11 +1867,7 @@ async function createCheckout({
         sellerGross:
             totalSellerGross,
 
-        sellerNet:
-            money(
-                totalSellerGross -
-                totalCommission
-            ),
+        sellerNet,
 
         message:
             "Checkout created successfully. Proceed to payment.",

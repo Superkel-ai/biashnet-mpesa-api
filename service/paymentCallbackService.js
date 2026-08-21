@@ -1,16 +1,58 @@
-const { db } = require("../config/firebase");
-const { processMarketplacePayment } = require("./paymentService");
+const {
+  db,
+} = require("../config/firebase");
 
-const { creditWallet } = require("./wallet");
-const { saveTransaction } = require("./transactions");
-const { createWalletIfNotExists } = require("./walletInit");
-const { syncInvestor } = require("./investors");
-const { updateInvestmentStats } = require("./investmentStats");
+const {
+  COLLECTIONS,
+} = require("../config/collections");
 
-const value = (callback, name) =>
-  callback?.CallbackMetadata?.Item?.find(
-    x => x.Name === name
-  )?.Value;
+const {
+  PAYMENT_STATUS,
+} = require("../config/paymentConstants");
+
+const {
+  processMarketplacePayment,
+  markPaymentFailed,
+} = require("./paymentService");
+
+const {
+  creditWallet,
+} = require("./wallet");
+
+const {
+  saveTransaction,
+} = require("./transactions");
+
+const {
+  createWalletIfNotExists,
+} = require("./walletInit");
+
+const {
+  syncInvestor,
+} = require("./investors");
+
+const {
+  updateInvestmentStats,
+} = require("./investmentStats");
+
+
+/*
+=========================================================
+CALLBACK METADATA HELPER
+=========================================================
+*/
+
+function value(callback, name) {
+
+  return callback
+    ?.CallbackMetadata
+    ?.Item
+    ?.find(item =>
+      item.Name === name
+    )
+    ?.Value;
+
+}
 
 
 /*
@@ -25,151 +67,497 @@ async function marketplaceCallback(
   resultCode,
   resultDesc
 ) {
-  const ref = doc.ref;
-  const payment = doc.data();
 
-  if (payment.status === "COMPLETED") {
-    return {
-      handled: true,
-      alreadyProcessed: true,
-      orderId: payment.orderId,
-    };
-  }
+  const ref =
+    doc.ref;
 
-  if (resultCode !== 0) {
-    await ref.update({
-      status: "FAILED",
-      resultCode,
-      resultDesc,
-      providerResponse: callback,
-      updatedAt: new Date(),
-    });
+  const payment =
+    doc.data();
 
-    if (payment.orderId) {
-      const orderRef = db
-        .collection("marketplaceOrders")
-        .doc(payment.orderId);
 
-      const snap = await orderRef.get();
-
-      if (
-        snap.exists &&
-        snap.data().paymentStatus !== "COMPLETED"
-      ) {
-        await orderRef.update({
-          status: "PENDING_PAYMENT",
-          paymentStatus: "FAILED",
-          paymentFailureCode: resultCode,
-          paymentFailureReason: resultDesc,
-          updatedAt: new Date(),
-        });
-      }
-    }
-
-    return {
-      handled: true,
-      status: "FAILED",
-      orderId: payment.orderId,
-    };
-  }
-
-  const amount = Number(value(callback, "Amount"));
-  const receipt = value(callback, "MpesaReceiptNumber");
-  const phone = value(callback, "PhoneNumber");
-
-  if (!receipt) {
-    await ref.update({
-      callbackProcessingStatus: "REQUIRES_REVIEW",
-      providerResponse: callback,
-      updatedAt: new Date(),
-    });
-
-    return {
-      handled: true,
-      requiresReview: true,
-      reason: "MISSING_MPESA_RECEIPT",
-    };
-  }
-
-  const expected = Number(payment.amount);
+  /*
+  =======================================================
+  ALREADY COMPLETED
+  =======================================================
+  */
 
   if (
-    Number.isFinite(expected) &&
-    Math.abs(amount - expected) > 0.01
+    payment.status ===
+    PAYMENT_STATUS.COMPLETED
   ) {
+
+    return {
+
+      handled: true,
+
+      alreadyProcessed: true,
+
+      orderId:
+        payment.orderId,
+
+      paymentId:
+        payment.paymentId,
+
+    };
+
+  }
+
+
+  /*
+  =======================================================
+  FAILED / CANCELLED M-PESA PAYMENT
+  =======================================================
+  */
+
+  if (
+    resultCode !== 0
+  ) {
+
+    try {
+
+      const result =
+        await markPaymentFailed({
+
+          paymentId:
+            payment.paymentId ||
+            doc.id,
+
+          resultCode,
+
+          resultDescription:
+            resultDesc,
+
+          providerResponse:
+            callback,
+
+        });
+
+      return {
+
+        handled: true,
+
+        success: false,
+
+        status:
+          PAYMENT_STATUS.FAILED,
+
+        orderId:
+          payment.orderId,
+
+        paymentId:
+          payment.paymentId ||
+          doc.id,
+
+        resultCode,
+
+        resultDesc,
+
+        ...result,
+
+      };
+
+    } catch (error) {
+
+      await ref.update({
+
+        callbackProcessingStatus:
+          "PROCESSING_FAILED",
+
+        callbackProcessingError:
+          error.message,
+
+        resultCode,
+
+        resultDesc,
+
+        providerResponse:
+          callback,
+
+        receivedByPlatform:
+          true,
+
+        updatedAt:
+          new Date(),
+
+      });
+
+      return {
+
+        handled: true,
+
+        requiresReview: true,
+
+        paymentConfirmedByProvider:
+          false,
+
+        reason:
+          "PAYMENT_FAILURE_PROCESSING_FAILED",
+
+      };
+
+    }
+
+  }
+
+
+  /*
+  =======================================================
+  SUCCESS CALLBACK DATA
+  =======================================================
+  */
+
+  const amount =
+    Number(
+      value(
+        callback,
+        "Amount"
+      )
+    );
+
+  const receipt =
+    value(
+      callback,
+      "MpesaReceiptNumber"
+    );
+
+  const phone =
+    value(
+      callback,
+      "PhoneNumber"
+    );
+
+
+  /*
+  =======================================================
+  RECEIPT VALIDATION
+  =======================================================
+  */
+
+  if (!receipt) {
+
     await ref.update({
-      callbackProcessingStatus: "AMOUNT_MISMATCH",
-      callbackAmount: amount,
-      receiptNumber: receipt,
-      providerResponse: callback,
-      updatedAt: new Date(),
+
+      callbackProcessingStatus:
+        "REQUIRES_REVIEW",
+
+      callbackProcessingError:
+        "Missing M-PESA receipt number.",
+
+      providerResponse:
+        callback,
+
+      receivedByPlatform:
+        true,
+
+      updatedAt:
+        new Date(),
+
     });
 
     return {
+
       handled: true,
+
       requiresReview: true,
-      reason: "PAYMENT_AMOUNT_MISMATCH",
+
+      reason:
+        "MISSING_MPESA_RECEIPT",
+
     };
+
   }
+
+
+  /*
+  =======================================================
+  AMOUNT VALIDATION
+  =======================================================
+  */
+
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0
+  ) {
+
+    await ref.update({
+
+      callbackProcessingStatus:
+        "AMOUNT_INVALID",
+
+      callbackAmount:
+        amount,
+
+      receiptNumber:
+        receipt,
+
+      providerResponse:
+        callback,
+
+      receivedByPlatform:
+        true,
+
+      updatedAt:
+        new Date(),
+
+    });
+
+    return {
+
+      handled: true,
+
+      requiresReview: true,
+
+      reason:
+        "INVALID_CALLBACK_AMOUNT",
+
+    };
+
+  }
+
+
+  /*
+  =======================================================
+  SERVER-SIDE AMOUNT CHECK
+  =======================================================
+  */
+
+  const expected =
+    Number(
+      payment.amount
+    );
+
+  if (
+    !Number.isFinite(expected) ||
+    Math.abs(
+      amount - expected
+    ) > 0.01
+  ) {
+
+    await ref.update({
+
+      callbackProcessingStatus:
+        "AMOUNT_MISMATCH",
+
+      callbackAmount:
+        amount,
+
+      receiptNumber:
+        receipt,
+
+      providerResponse:
+        callback,
+
+      receivedByPlatform:
+        true,
+
+      updatedAt:
+        new Date(),
+
+    });
+
+    return {
+
+      handled: true,
+
+      requiresReview: true,
+
+      reason:
+        "PAYMENT_AMOUNT_MISMATCH",
+
+    };
+
+  }
+
+
+  /*
+  =======================================================
+  PROCESS MARKETPLACE PAYMENT
+  =======================================================
+
+  This is the important hand-off.
+
+  paymentService now performs the atomic
+  marketplace payment processing:
+
+  Payment
+      ↓
+  Order
+      ↓
+  Stock
+      ↓
+  Seller funds
+  =======================================================
+  */
 
   let result;
 
   try {
-    result = await processMarketplacePayment({
-      orderId: payment.orderId,
-      providerTransactionId: receipt,
-      amount: amount || payment.amount,
-      paymentMethod: "MPESA",
-      providerResponse: callback,
-    });
+
+    result =
+      await processMarketplacePayment({
+
+        orderId:
+          payment.orderId,
+
+        providerTransactionId:
+          receipt,
+
+        amount,
+
+        paymentMethod:
+          "MPESA",
+
+        providerResponse:
+          callback,
+
+      });
+
   } catch (error) {
+
+    console.error(
+      "❌ Marketplace payment processing failed:",
+      error
+    );
+
     await ref.update({
-      callbackProcessingStatus: "PROCESSING_FAILED",
-      callbackProcessingError: error.message,
-      receiptNumber: receipt,
-      callbackAmount: amount,
-      providerResponse: callback,
-      receivedByPlatform: true,
-      updatedAt: new Date(),
+
+      callbackProcessingStatus:
+        "PROCESSING_FAILED",
+
+      callbackProcessingError:
+        error.message,
+
+      receiptNumber:
+        receipt,
+
+      callbackAmount:
+        amount,
+
+      callbackPhoneNumber:
+        phone || null,
+
+      providerResponse:
+        callback,
+
+      receivedByPlatform:
+        true,
+
+      updatedAt:
+        new Date(),
+
     });
 
     return {
+
       handled: true,
+
       requiresReview: true,
-      paymentConfirmedByProvider: true,
-      reason: "INTERNAL_PROCESSING_FAILED",
+
+      paymentConfirmedByProvider:
+        true,
+
+      reason:
+        "INTERNAL_PROCESSING_FAILED",
+
     };
+
   }
 
+
+  /*
+  =======================================================
+  SAVE CALLBACK INFORMATION
+  =======================================================
+  */
+
   await ref.update({
-    status: "COMPLETED",
+
+    status:
+      PAYMENT_STATUS.COMPLETED,
+
     resultCode,
-    resultDesc,
-    receiptNumber: receipt,
-    callbackAmount: amount,
-    callbackPhoneNumber: phone || null,
-    merchantRequestID: callback.MerchantRequestID,
-    providerResponse: callback,
-    receivedByPlatform: true,
-    callbackProcessingStatus: "PROCESSED",
-    completedAt: new Date(),
-    updatedAt: new Date(),
+
+    resultDescription:
+      resultDesc,
+
+    receiptNumber:
+      receipt,
+
+    callbackAmount:
+      amount,
+
+    callbackPhoneNumber:
+      phone || null,
+
+    merchantRequestId:
+      callback.MerchantRequestID ||
+      payment.merchantRequestId ||
+      null,
+
+    checkoutRequestId:
+      callback.CheckoutRequestID ||
+      payment.checkoutRequestId ||
+      null,
+
+    providerResponse:
+      callback,
+
+    receivedByPlatform:
+      true,
+
+    callbackProcessingStatus:
+      "PROCESSED",
+
+    completedAt:
+      new Date(),
+
+    updatedAt:
+      new Date(),
+
   });
 
+
+  /*
+  =======================================================
+  SUCCESS
+  =======================================================
+  */
+
   return {
+
     handled: true,
+
     success: true,
-    status: "COMPLETED",
-    orderId: payment.orderId,
-    receiptNumber: receipt,
-    transactionId: result?.transactionId || null,
+
+    alreadyProcessed:
+      result?.alreadyProcessed ||
+      false,
+
+    status:
+      PAYMENT_STATUS.COMPLETED,
+
+    orderId:
+      payment.orderId,
+
+    paymentId:
+      payment.paymentId ||
+      doc.id,
+
+    receiptNumber:
+      receipt,
+
+    transactionId:
+      result?.providerTransactionId ||
+      receipt,
+
   };
+
 }
 
 
 /*
 =========================================================
-OLD INVESTMENT / WALLET CALLBACK
+LEGACY INVESTMENT / WALLET CALLBACK
 =========================================================
 */
 
@@ -179,136 +567,374 @@ async function investmentCallback(
   resultCode,
   resultDesc
 ) {
-  const ref = db
-    .collection("pendingTransactions")
-    .doc(checkoutRequestID);
 
-  const snap = await ref.get();
+  const ref =
+    db
+      .collection(
+        COLLECTIONS.PENDING_TRANSACTIONS
+      )
+      .doc(
+        checkoutRequestID
+      );
+
+
+  const snap =
+    await ref.get();
+
 
   if (!snap.exists) {
+
     return {
+
       handled: false,
-      reason: "UNKNOWN_PAYMENT",
+
+      reason:
+        "UNKNOWN_PAYMENT",
+
       checkoutRequestID,
+
     };
+
   }
 
-  const pending = snap.data();
 
-  if (pending.status === "SUCCESS") {
+  const pending =
+    snap.data();
+
+
+  if (
+    pending.status ===
+    "SUCCESS"
+  ) {
+
     return {
+
       handled: true,
+
       alreadyProcessed: true,
+
     };
+
   }
 
-  if (resultCode !== 0) {
+
+  /*
+  =======================================================
+  FAILED PAYMENT
+  =======================================================
+  */
+
+  if (
+    resultCode !== 0
+  ) {
+
     await ref.update({
-      status: "FAILED",
+
+      status:
+        "FAILED",
+
       resultCode,
+
       resultDesc,
+
       callback,
-      updatedAt: new Date(),
+
+      updatedAt:
+        new Date(),
+
     });
 
     return {
+
       handled: true,
-      status: "FAILED",
+
+      status:
+        "FAILED",
+
     };
+
   }
+
+
+  /*
+  =======================================================
+  PAYMENT DATA
+  =======================================================
+  */
 
   const amount =
-    Number(value(callback, "Amount")) ||
-    Number(pending.amount);
+    Number(
+      value(
+        callback,
+        "Amount"
+      )
+    ) ||
+    Number(
+      pending.amount
+    );
+
 
   const receipt =
-    value(callback, "MpesaReceiptNumber");
+    value(
+      callback,
+      "MpesaReceiptNumber"
+    );
 
-  const phone = String(
-    value(callback, "PhoneNumber") ||
-    pending.phone ||
-    ""
-  );
+
+  const phone =
+    String(
+      value(
+        callback,
+        "PhoneNumber"
+      ) ||
+      pending.phone ||
+      ""
+    );
+
+
+  /*
+  =======================================================
+  RECEIPT VALIDATION
+  =======================================================
+  */
 
   if (!receipt) {
+
     await ref.update({
-      status: "REQUIRES_REVIEW",
+
+      status:
+        "REQUIRES_REVIEW",
+
       callback,
-      updatedAt: new Date(),
+
+      updatedAt:
+        new Date(),
+
     });
 
     return {
+
       handled: true,
+
       requiresReview: true,
-      reason: "MISSING_MPESA_RECEIPT",
+
+      reason:
+        "MISSING_MPESA_RECEIPT",
+
     };
+
   }
 
+
+  /*
+  =======================================================
+  PROCESS LEGACY INVESTMENT
+  =======================================================
+  */
+
   try {
+
     await createWalletIfNotExists(
       pending.userId,
       phone
     );
 
+
     await saveTransaction({
+
       checkoutRequestID,
-      receiptNumber: receipt,
-      userId: pending.userId,
+
+      receiptNumber:
+        receipt,
+
+      userId:
+        pending.userId,
+
       phone,
+
       amount,
-      type: "DEPOSIT",
-      status: "SUCCESS",
-      provider: "MPESA",
+
+      type:
+        "DEPOSIT",
+
+      status:
+        "SUCCESS",
+
+      provider:
+        "MPESA",
+
     });
+
 
     await creditWallet({
-      userId: pending.userId,
+
+      userId:
+        pending.userId,
+
       phone,
+
       amount,
-      receiptNumber: receipt,
+
+      receiptNumber:
+        receipt,
+
     });
 
-    await syncInvestor(pending.userId);
+
+    await syncInvestor(
+      pending.userId
+    );
+
+
     await updateInvestmentStats();
 
+
     await ref.update({
-      status: "SUCCESS",
-      receiptNumber: receipt,
+
+      status:
+        "SUCCESS",
+
+      receiptNumber:
+        receipt,
+
       resultCode,
+
       resultDesc,
+
       callback,
-      updatedAt: new Date(),
+
+      updatedAt:
+        new Date(),
+
     });
 
+
     return {
+
       handled: true,
+
       success: true,
-      status: "SUCCESS",
-      userId: pending.userId,
+
+      status:
+        "SUCCESS",
+
+      userId:
+        pending.userId,
+
       amount,
-      receiptNumber: receipt,
+
+      receiptNumber:
+        receipt,
+
     };
+
   } catch (error) {
+
     console.error(
       "Investment payment processing failed:",
       error
     );
 
+
     await ref.update({
-      status: "PROCESSING_FAILED",
-      processingError: error.message,
-      receiptNumber: receipt,
+
+      status:
+        "PROCESSING_FAILED",
+
+      processingError:
+        error.message,
+
+      receiptNumber:
+        receipt,
+
       callback,
-      updatedAt: new Date(),
+
+      updatedAt:
+        new Date(),
+
     });
 
+
     return {
+
       handled: true,
+
       requiresReview: true,
-      paymentConfirmedByProvider: true,
-      reason: "INVESTMENT_PROCESSING_FAILED",
+
+      paymentConfirmedByProvider:
+        true,
+
+      reason:
+        "INVESTMENT_PROCESSING_FAILED",
+
     };
+
   }
+
+}
+
+
+/*
+=========================================================
+FIND MARKETPLACE PAYMENT
+=========================================================
+
+Uses the new field first.
+
+Also supports old documents using:
+
+checkoutRequestID
+=========================================================
+*/
+
+async function findMarketplacePayment(
+  checkoutRequestId
+) {
+
+  let snapshot =
+    await db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .where(
+        "checkoutRequestId",
+        "==",
+        checkoutRequestId
+      )
+      .limit(1)
+      .get();
+
+
+  if (!snapshot.empty)
+    return snapshot.docs[0];
+
+
+  /*
+  -------------------------------------------------------
+  OLD FIELD COMPATIBILITY
+  -------------------------------------------------------
+  */
+
+  snapshot =
+    await db
+      .collection(
+        COLLECTIONS.PAYMENTS
+      )
+      .where(
+        "checkoutRequestID",
+        "==",
+        checkoutRequestId
+      )
+      .limit(1)
+      .get();
+
+
+  if (snapshot.empty)
+    return null;
+
+
+  return snapshot.docs[0];
+
 }
 
 
@@ -318,31 +944,56 @@ MAIN M-PESA CALLBACK
 =========================================================
 */
 
-async function processMpesaCallback(body) {
-  const callback = body?.Body?.stkCallback;
+async function processMpesaCallback(
+  body
+) {
+
+  const callback =
+    body?.Body?.stkCallback;
+
 
   if (!callback) {
+
     return {
+
       handled: false,
-      reason: "INVALID_CALLBACK",
+
+      reason:
+        "INVALID_CALLBACK",
+
     };
+
   }
+
 
   const checkoutRequestID =
     callback.CheckoutRequestID;
 
+
   const resultCode =
-    Number(callback.ResultCode);
+    Number(
+      callback.ResultCode
+    );
+
 
   const resultDesc =
-    callback.ResultDesc || "";
+    callback.ResultDesc ||
+    "";
+
 
   if (!checkoutRequestID) {
+
     return {
+
       handled: false,
-      reason: "MISSING_CHECKOUT_REQUEST_ID",
+
+      reason:
+        "MISSING_CHECKOUT_REQUEST_ID",
+
     };
+
   }
+
 
   console.log(
     "🔥 M-PESA CALLBACK:",
@@ -350,46 +1001,65 @@ async function processMpesaCallback(body) {
     resultCode
   );
 
+
   /*
-  ---------------------------------------------------------
-  1. CHECK MARKETPLACE
-  ---------------------------------------------------------
+  =======================================================
+  1. FIND MARKETPLACE PAYMENT
+  =======================================================
   */
 
-  const marketplace = await db
-    .collection("marketplacePayments")
-    .where(
-      "checkoutRequestID",
-      "==",
+  const marketplaceDoc =
+    await findMarketplacePayment(
       checkoutRequestID
-    )
-    .limit(1)
-    .get();
-
-  if (!marketplace.empty) {
-    return marketplaceCallback(
-      marketplace.docs[0],
-      callback,
-      resultCode,
-      resultDesc
     );
+
+
+  if (marketplaceDoc) {
+
+    return marketplaceCallback(
+
+      marketplaceDoc,
+
+      callback,
+
+      resultCode,
+
+      resultDesc
+
+    );
+
   }
 
+
   /*
-  ---------------------------------------------------------
-  2. CHECK OLD INVESTMENT SYSTEM
-  ---------------------------------------------------------
+  =======================================================
+  2. FALL BACK TO LEGACY INVESTMENT
+  =======================================================
   */
 
   return investmentCallback(
+
     checkoutRequestID,
+
     callback,
+
     resultCode,
+
     resultDesc
+
   );
+
 }
 
 
+/*
+=========================================================
+EXPORT
+=========================================================
+*/
+
 module.exports = {
+
   processMpesaCallback,
+
 };
